@@ -7,6 +7,8 @@
   },
   "scripts": {
     "dev": "vinext dev",
+    "local:downloader": "node scripts/local-downloader.mjs",
+    "local:start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& ([scriptblock]::Create((Get-Content -Raw -Encoding UTF8 'scripts/start-local.ps1')))\"",
     "build": "vinext build",
     "start": "vinext start",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",

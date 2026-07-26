@@ -20,7 +20,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const protocol = incoming.get("x-forwarded-proto") || (host.startsWith("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
   const title = "拆片 AI｜视频转字幕与内容拆解";
-  const description = "粘贴视频链接，自动提取音频、生成字幕，并用 GPT 拆解内容结构、亮点与优化方向。";
+  const description = "粘贴视频链接，自动提取音频、生成字幕，并用 DeepSeek 或 OpenAI 拆解内容结构、亮点与优化方向。";
 
   return {
     metadataBase: new URL(origin),

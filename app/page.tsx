@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Stage = "idle" | "download" | "transcribe" | "analyze" | "done" | "error";
 
@@ -42,6 +42,35 @@ type AnalysisResult = {
     improvements: string[];
     tags: string[];
   };
+};
+
+type LocalHealth = {
+  ok: boolean;
+  services: {
+    downloader: boolean;
+    whisper: boolean;
+  };
+  checkedAt: string;
+};
+
+type RewriteFormat = "short-video" | "xiaohongshu" | "private-domain" | "advertising";
+
+type RewriteResult = {
+  title: string;
+  hook: string;
+  body: string;
+  cta: string;
+  strategy: Array<{
+    source: string;
+    adaptation: string;
+  }>;
+};
+
+const rewriteFormatLabels: Record<RewriteFormat, string> = {
+  "short-video": "短视频口播",
+  xiaohongshu: "小红书图文",
+  "private-domain": "朋友圈 / 私域",
+  advertising: "广告推广文案",
 };
 
 const demoResult: AnalysisResult = {
@@ -94,10 +123,9 @@ const demoResult: AnalysisResult = {
   },
 };
 
-const stages = [
+const baseStages = [
   { key: "download", label: "读取视频", detail: "提取可转写的音频内容" },
   { key: "transcribe", label: "Whisper 转写", detail: "识别语音并生成时间轴" },
-  { key: "analyze", label: "GPT 拆解", detail: "提炼结构、亮点与改进方向" },
 ] as const;
 
 const stageIndex: Record<Stage, number> = {
@@ -131,8 +159,33 @@ function scoreTone(score: number) {
   return "steady";
 }
 
+async function writeClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
 export default function Home() {
+  const [sourceMode, setSourceMode] = useState<"url" | "transcript">("url");
   const [url, setUrl] = useState("");
+  const [transcriptInput, setTranscriptInput] = useState("");
+  const [openaiApiKey, setOpenaiApiKey] = useState("");
+  const [deepseekApiKey, setDeepseekApiKey] = useState("");
+  const [analysisProvider, setAnalysisProvider] = useState<"deepseek" | "openai">("deepseek");
+  const [transcriptionProvider, setTranscriptionProvider] = useState<"local" | "openai">("local");
+  const [cookieBrowser, setCookieBrowser] = useState<
+    "fresh-edge" | "none" | "edge" | "chrome"
+  >("fresh-edge");
   const [language, setLanguage] = useState("auto");
   const [focus, setFocus] = useState("growth");
   const [stage, setStage] = useState<Stage>("idle");
@@ -140,9 +193,61 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<"analysis" | "transcript">("analysis");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [transcriptCopied, setTranscriptCopied] = useState(false);
+  const [copiedLine, setCopiedLine] = useState<number | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [health, setHealth] = useState<LocalHealth | null>(null);
+  const [healthChecking, setHealthChecking] = useState(true);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [projectInfo, setProjectInfo] = useState("");
+  const [rewriteDirection, setRewriteDirection] = useState("");
+  const [rewriteFormat, setRewriteFormat] = useState<RewriteFormat>("short-video");
+  const [rewriteStatus, setRewriteStatus] = useState<"idle" | "working" | "done" | "error">("idle");
+  const [rewriteResult, setRewriteResult] = useState<RewriteResult | null>(null);
+  const [rewriteError, setRewriteError] = useState("");
+  const [rewriteCopied, setRewriteCopied] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const cancelRequestedRef = useRef(false);
 
   const isWorking = ["download", "transcribe", "analyze"].includes(stage);
   const currentStage = stageIndex[stage];
+  const analysisService = analysisProvider === "deepseek" ? "DeepSeek" : "OpenAI";
+  const transcriptionService =
+    sourceMode === "transcript"
+      ? "直接使用字幕"
+      : transcriptionProvider === "local"
+        ? "本机 Whisper"
+        : "OpenAI Whisper";
+  const needsOpenAIKey =
+    analysisProvider === "openai" ||
+    (sourceMode === "url" && transcriptionProvider === "openai");
+  const stages = [
+    sourceMode === "transcript"
+      ? { key: "download" as const, label: "读取字幕", detail: "使用你粘贴的字幕全文" }
+      : baseStages[0],
+    {
+      key: "transcribe" as const,
+      label: sourceMode === "transcript" ? "跳过语音转写" : `${transcriptionService} 转写`,
+      detail: sourceMode === "transcript" ? "无需调用 Whisper" : "识别语音并生成时间轴",
+    },
+    {
+      key: "analyze" as const,
+      label: `${analysisService} 拆解`,
+      detail: "提炼结构、亮点与改进方向",
+    },
+  ];
+  const activeStageLabel =
+    stages[Math.max(0, Math.min(currentStage, stages.length - 1))]?.label || "准备处理";
+  const healthyServiceCount = health
+    ? Number(health.services.downloader) + Number(health.services.whisper)
+    : 0;
+  const healthLabel = healthChecking
+    ? "正在检查本机服务"
+    : health?.ok
+      ? "本机服务已就绪"
+      : sourceMode === "transcript"
+        ? "在线字幕模式可用"
+        : `本机服务 ${healthyServiceCount}/2`;
 
   const markdown = useMemo(() => {
     if (!result) return "";
@@ -172,48 +277,202 @@ export default function Home() {
     ].join("\n");
   }, [result]);
 
-  async function runAnalysis(event: React.FormEvent) {
-    event.preventDefault();
-    if (!url.trim()) {
-      setError("请先粘贴一个视频链接，或点击“体验示例”。");
+  const rewriteMarkdown = useMemo(() => {
+    if (!rewriteResult) return "";
+    return [
+      `# ${rewriteResult.title}`,
+      "",
+      "## 开场",
+      rewriteResult.hook,
+      "",
+      "## 正文",
+      rewriteResult.body,
+      "",
+      "## 行动引导",
+      rewriteResult.cta,
+      "",
+      "## 借鉴策略",
+      ...rewriteResult.strategy.map(
+        (item) => `- ${item.source}：${item.adaptation}`,
+      ),
+    ].join("\n");
+  }, [rewriteResult]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function refreshHealth() {
+      setHealthChecking(true);
+      try {
+        const response = await fetch("/api/health", { cache: "no-store" });
+        const payload = (await response.json()) as LocalHealth;
+        if (active) setHealth(payload);
+      } catch {
+        if (active) setHealth(null);
+      } finally {
+        if (active) setHealthChecking(false);
+      }
+    }
+
+    void refreshHealth();
+    const timer = window.setInterval(refreshHealth, 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  function focusSetting(id: "deepseek-key" | "openai-key") {
+    setSettingsOpen(true);
+    window.requestAnimationFrame(() => {
+      document.getElementById(id)?.focus();
+    });
+  }
+
+  async function startAnalysis() {
+    if (sourceMode === "url") {
+      if (!url.trim()) {
+        setError("请先粘贴一个视频链接，或点击“体验示例”。");
+        return;
+      }
+
+      try {
+        const parsed = new URL(url.trim());
+        if (!["http:", "https:"].includes(parsed.protocol)) throw new Error();
+      } catch {
+        setError("请输入完整的 http 或 https 视频链接。");
+        return;
+      }
+    } else if (transcriptInput.trim().length < 20) {
+      setError("请至少粘贴 20 个字的字幕内容。");
+      return;
+    }
+
+    if (analysisProvider === "deepseek" && deepseekApiKey.trim().length < 20) {
+      setError("请先在“服务配置”中填写有效的 DeepSeek API Key。");
+      focusSetting("deepseek-key");
+      return;
+    }
+
+    if (needsOpenAIKey && openaiApiKey.trim().length < 20) {
+      setError("当前选择需要 OpenAI API Key，请先在“服务配置”中填写。");
+      focusSetting("openai-key");
+      return;
+    }
+
+    if (
+      sourceMode === "url" &&
+      transcriptionProvider === "local" &&
+      health &&
+      !health.services.whisper
+    ) {
+      setError("本机 Whisper 尚未运行，请双击“启动拆片AI”后再试。");
+      setSettingsOpen(true);
       return;
     }
 
     setError("");
     setResult(null);
-    setStage("download");
+    setRewriteResult(null);
+    setRewriteError("");
+    setRewriteStatus("idle");
+    setStage(sourceMode === "transcript" ? "analyze" : "download");
     setActiveTab("analysis");
+    setElapsedSeconds(0);
+    cancelRequestedRef.current = false;
 
-    const progressTimer = window.setTimeout(() => setStage("transcribe"), 1300);
-    const analyzeTimer = window.setTimeout(() => setStage("analyze"), 5200);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const startedAt = Date.now();
+    const elapsedTimer = window.setInterval(() => {
+      setElapsedSeconds(Math.max(1, Math.floor((Date.now() - startedAt) / 1000)));
+    }, 1_000);
+
+    const progressTimer =
+      sourceMode === "url"
+        ? window.setTimeout(() => setStage("transcribe"), 18_000)
+        : undefined;
+    const analyzeTimer =
+      sourceMode === "url"
+        ? window.setTimeout(() => setStage("analyze"), 55_000)
+        : undefined;
 
     try {
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim(), language, focus }),
+        signal: controller.signal,
+        body: JSON.stringify({
+          url: url.trim(),
+          transcriptText:
+            sourceMode === "transcript" ? transcriptInput.trim() : undefined,
+          language,
+          focus,
+          analysisProvider,
+          transcriptionProvider,
+          cookieBrowser: cookieBrowser === "none" ? undefined : cookieBrowser,
+          openaiApiKey: openaiApiKey.trim() || undefined,
+          deepseekApiKey: deepseekApiKey.trim() || undefined,
+        }),
       });
-      const payload = (await response.json()) as AnalysisResult & { error?: string };
+      const rawPayload = await response.text();
+      let payload: AnalysisResult & { error?: string };
+      try {
+        payload = JSON.parse(rawPayload) as AnalysisResult & { error?: string };
+      } catch {
+        throw new Error(
+          response.ok
+            ? "服务返回的数据格式异常，请重试。"
+            : "网页服务暂时不可用，请确认本地服务仍在运行后重试。",
+        );
+      }
       if (!response.ok) {
         throw new Error(payload.error || "处理失败，请稍后重试。");
       }
-      window.clearTimeout(progressTimer);
-      window.clearTimeout(analyzeTimer);
+      if (progressTimer) window.clearTimeout(progressTimer);
+      if (analyzeTimer) window.clearTimeout(analyzeTimer);
       setStage("analyze");
       await new Promise((resolve) => window.setTimeout(resolve, 420));
       setResult(payload as AnalysisResult);
       setStage("done");
     } catch (caught) {
-      window.clearTimeout(progressTimer);
-      window.clearTimeout(analyzeTimer);
       setStage("error");
-      setError(caught instanceof Error ? caught.message : "处理失败，请稍后重试。");
+      if (caught instanceof DOMException && caught.name === "AbortError") {
+        setError(
+          cancelRequestedRef.current
+            ? "已停止本次处理，你可以调整配置后重新开始。"
+            : "处理请求已超时，请确认本地服务正常后重试。",
+        );
+      } else if (caught instanceof TypeError) {
+        setError("网页服务连接中断。请确认本地页面仍能打开，然后点击“重新处理”。");
+      } else {
+        setError(caught instanceof Error ? caught.message : "处理失败，请稍后重试。");
+      }
+    } finally {
+      if (progressTimer) window.clearTimeout(progressTimer);
+      if (analyzeTimer) window.clearTimeout(analyzeTimer);
+      window.clearInterval(elapsedTimer);
+      abortRef.current = null;
     }
+  }
+
+  function runAnalysis(event: React.FormEvent) {
+    event.preventDefault();
+    void startAnalysis();
+  }
+
+  function cancelAnalysis() {
+    cancelRequestedRef.current = true;
+    abortRef.current?.abort();
   }
 
   async function loadDemo() {
     setError("");
     setResult(null);
+    setRewriteResult(null);
+    setRewriteError("");
+    setRewriteStatus("idle");
     setStage("download");
     setActiveTab("analysis");
     await new Promise((resolve) => window.setTimeout(resolve, 700));
@@ -226,9 +485,101 @@ export default function Home() {
   }
 
   async function copyReport() {
-    await navigator.clipboard.writeText(markdown);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1800);
+    try {
+      await writeClipboard(markdown);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setError("复制失败，请允许浏览器使用剪贴板后重试。");
+    }
+  }
+
+  async function copyTranscript() {
+    if (!result) return;
+    try {
+      await writeClipboard(result.transcript);
+      setTranscriptCopied(true);
+      window.setTimeout(() => setTranscriptCopied(false), 1800);
+    } catch {
+      setError("字幕复制失败，请允许浏览器使用剪贴板后重试。");
+    }
+  }
+
+  async function copyReusableLine(line: string, index: number) {
+    try {
+      await writeClipboard(line);
+      setCopiedLine(index);
+      window.setTimeout(() => setCopiedLine(null), 1800);
+    } catch {
+      setError("句式复制失败，请允许浏览器使用剪贴板后重试。");
+    }
+  }
+
+  async function generateRewrite(event: React.FormEvent) {
+    event.preventDefault();
+    if (!result) return;
+    if (projectInfo.trim().length < 10) {
+      setRewriteError("请至少填写 10 个字的项目信息，让生成内容有事实依据。");
+      return;
+    }
+    if (analysisProvider === "deepseek" && deepseekApiKey.trim().length < 20) {
+      setRewriteError("请先在“服务配置”中填写有效的 DeepSeek API Key。");
+      focusSetting("deepseek-key");
+      return;
+    }
+    if (analysisProvider === "openai" && openaiApiKey.trim().length < 20) {
+      setRewriteError("请先在“服务配置”中填写有效的 OpenAI API Key。");
+      focusSetting("openai-key");
+      return;
+    }
+
+    setRewriteStatus("working");
+    setRewriteError("");
+    setRewriteResult(null);
+
+    try {
+      const response = await fetch("/api/rewrite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          analysis: result.analysis,
+          projectInfo: projectInfo.trim(),
+          direction: rewriteDirection.trim() || undefined,
+          format: rewriteFormat,
+          analysisProvider,
+          openaiApiKey: openaiApiKey.trim() || undefined,
+          deepseekApiKey: deepseekApiKey.trim() || undefined,
+        }),
+      });
+      const rawPayload = await response.text();
+      let payload: RewriteResult & { error?: string };
+      try {
+        payload = JSON.parse(rawPayload) as RewriteResult & { error?: string };
+      } catch {
+        throw new Error("仿写服务返回异常，请稍后重试。");
+      }
+      if (!response.ok) {
+        throw new Error(payload.error || "生成失败，请稍后重试。");
+      }
+      setRewriteResult(payload);
+      setRewriteStatus("done");
+    } catch (caught) {
+      setRewriteStatus("error");
+      setRewriteError(
+        caught instanceof Error ? caught.message : "生成失败，请稍后重试。",
+      );
+    }
+  }
+
+  async function copyRewrite() {
+    if (!rewriteResult) return;
+    try {
+      await writeClipboard(rewriteMarkdown);
+      setRewriteCopied(true);
+      window.setTimeout(() => setRewriteCopied(false), 1800);
+    } catch {
+      setRewriteError("文案复制失败，请允许浏览器使用剪贴板后重试。");
+    }
   }
 
   function downloadSrt() {
@@ -256,10 +607,15 @@ export default function Home() {
           <span>拆片</span>
           <em>AI</em>
         </a>
-        <div className="topbar-note">
+        <button
+          className={`topbar-note ${health?.ok ? "ready" : "warning"}`}
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          title="打开服务配置"
+        >
           <span className="status-dot" aria-hidden="true" />
-          本地优先 · 密钥仅存服务端
-        </div>
+          {healthLabel} · 密钥不落盘
+        </button>
       </header>
 
       <section className="hero" id="top">
@@ -271,25 +627,59 @@ export default function Home() {
             <span>拆到能复用。</span>
           </h1>
           <p className="hero-lead">
-            粘贴链接，自动提取音频、生成字幕，再从开场、结构、金句和转化动作四个维度给出可执行的内容报告。
+            粘贴视频链接或现成字幕，从开场、结构、金句和转化动作四个维度获得可执行的内容报告。
           </p>
 
           <form className="input-panel" onSubmit={runAnalysis}>
-            <label htmlFor="video-url">视频链接</label>
-            <div className="url-row">
-              <div className="url-input-wrap">
-                <span className="link-symbol" aria-hidden="true">↗</span>
-                <input
-                  id="video-url"
-                  type="url"
-                  inputMode="url"
-                  placeholder="粘贴公开视频或音视频直链…"
-                  value={url}
-                  onChange={(event) => setUrl(event.target.value)}
+            <div className="source-mode" role="tablist" aria-label="内容输入方式">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sourceMode === "url"}
+                onClick={() => setSourceMode("url")}
+                disabled={isWorking}
+              >
+                视频链接
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={sourceMode === "transcript"}
+                onClick={() => setSourceMode("transcript")}
+                disabled={isWorking}
+              >
+                粘贴字幕
+              </button>
+            </div>
+            <label htmlFor={sourceMode === "url" ? "video-url" : "transcript-input"}>
+              {sourceMode === "url" ? "视频链接" : "字幕全文"}
+            </label>
+            <div className={`url-row ${sourceMode === "transcript" ? "transcript-mode" : ""}`}>
+              {sourceMode === "url" ? (
+                <div className="url-input-wrap">
+                  <span className="link-symbol" aria-hidden="true">↗</span>
+                  <input
+                    id="video-url"
+                    type="url"
+                    inputMode="url"
+                    placeholder="粘贴公开视频或音视频直链…"
+                    value={url}
+                    onChange={(event) => setUrl(event.target.value)}
+                    disabled={isWorking}
+                    aria-describedby="url-help"
+                  />
+                </div>
+              ) : (
+                <textarea
+                  className="transcript-input"
+                  id="transcript-input"
+                  value={transcriptInput}
+                  onChange={(event) => setTranscriptInput(event.target.value.slice(0, 50_000))}
+                  placeholder="把已有字幕、逐字稿或口播稿粘贴到这里，即可直接使用 DeepSeek 拆解…"
+                  rows={6}
                   disabled={isWorking}
-                  aria-describedby="url-help"
                 />
-              </div>
+              )}
               <button className="primary-button" type="submit" disabled={isWorking}>
                 {isWorking ? "正在拆解" : "开始拆解"}
                 <span aria-hidden="true">{isWorking ? "···" : "→"}</span>
@@ -298,13 +688,19 @@ export default function Home() {
             <div className="options-row">
               <label>
                 <span>字幕语言</span>
-                <select value={language} onChange={(event) => setLanguage(event.target.value)} disabled={isWorking}>
-                  <option value="auto">自动识别</option>
-                  <option value="zh">中文</option>
-                  <option value="en">英文</option>
-                  <option value="ja">日文</option>
-                  <option value="ko">韩文</option>
-                </select>
+                {sourceMode === "url" ? (
+                  <select value={language} onChange={(event) => setLanguage(event.target.value)} disabled={isWorking}>
+                    <option value="auto">自动识别</option>
+                    <option value="zh">中文</option>
+                    <option value="en">英文</option>
+                    <option value="ja">日文</option>
+                    <option value="ko">韩文</option>
+                  </select>
+                ) : (
+                  <select disabled aria-label="已提供字幕">
+                    <option>已提供字幕</option>
+                  </select>
+                )}
               </label>
               <label>
                 <span>拆解重点</span>
@@ -319,9 +715,133 @@ export default function Home() {
                 体验示例 <span>↘</span>
               </button>
             </div>
+            <details
+              className="local-settings"
+              open={settingsOpen}
+              onToggle={(event) => setSettingsOpen(event.currentTarget.open)}
+            >
+              <summary>服务配置 <span>{transcriptionService} + {analysisService} 拆解</span></summary>
+              <div className="service-health" aria-live="polite">
+                <div className={health?.services.downloader ? "ready" : "offline"}>
+                  <span />
+                  <strong>视频下载</strong>
+                  <small>{health?.services.downloader ? "可用" : "未连接"}</small>
+                </div>
+                <div className={health?.services.whisper ? "ready" : "offline"}>
+                  <span />
+                  <strong>本机 Whisper</strong>
+                  <small>{health?.services.whisper ? "已加载" : "未连接"}</small>
+                </div>
+              </div>
+              <div className="settings-grid">
+                <label className="settings-field" htmlFor="transcription-provider">
+                  <span>字幕转写服务</span>
+                  <select
+                    id="transcription-provider"
+                    value={transcriptionProvider}
+                    onChange={(event) =>
+                      setTranscriptionProvider(event.target.value as "local" | "openai")
+                    }
+                    disabled={isWorking}
+                  >
+                    <option value="local">本机 Whisper（推荐）</option>
+                    <option value="openai">OpenAI Whisper API</option>
+                  </select>
+                </label>
+                <label className="settings-field" htmlFor="analysis-provider">
+                  <span>内容拆解服务</span>
+                  <select
+                    id="analysis-provider"
+                    value={analysisProvider}
+                    onChange={(event) =>
+                      setAnalysisProvider(event.target.value as "deepseek" | "openai")
+                    }
+                    disabled={isWorking}
+                  >
+                    <option value="deepseek">DeepSeek（推荐）</option>
+                    <option value="openai">OpenAI</option>
+                  </select>
+                </label>
+                <div className="settings-status settings-status-wide" aria-live="polite">
+                  <strong>{analysisService}</strong>
+                  <span>{analysisProvider === "deepseek" ? "deepseek-v4-flash · 快速模式" : "GPT 拆解模型"}</span>
+                </div>
+              </div>
+              <label className="cookie-browser-field" htmlFor="cookie-browser">
+                <span>平台下载凭证</span>
+                <select
+                  id="cookie-browser"
+                  value={cookieBrowser}
+                  onChange={(event) =>
+                    setCookieBrowser(
+                      event.target.value as "fresh-edge" | "none" | "edge" | "chrome",
+                    )
+                  }
+                  disabled={isWorking}
+                >
+                  <option value="fresh-edge">自动使用临时 Edge（推荐）</option>
+                  <option value="none">不使用 Cookie</option>
+                  <option value="edge">读取现有 Edge Cookie</option>
+                  <option value="chrome">读取现有 Chrome Cookie</option>
+                </select>
+              </label>
+              <p>
+                推荐选项会用隔离的临时 Edge 加载视频并读取当前播放流，不读取账号、历史记录或现有浏览器 Cookie；任务完成后立即删除临时数据。
+              </p>
+              {transcriptionProvider === "local" && (
+                <p className="local-whisper-note">
+                  字幕在这台电脑上处理，无需 OpenAI Key。首次使用会下载 Whisper base 模型，之后可离线转写。
+                </p>
+              )}
+              {needsOpenAIKey && (
+                <>
+                  <label htmlFor="openai-key">OpenAI API Key</label>
+                  <input
+                    id="openai-key"
+                    type="password"
+                    autoComplete="off"
+                    placeholder="sk-…"
+                    value={openaiApiKey}
+                    onChange={(event) => setOpenaiApiKey(event.target.value)}
+                    disabled={isWorking}
+                  />
+                  <p>仅在选择 OpenAI 转写或 OpenAI 拆解时使用。</p>
+                </>
+              )}
+              {analysisProvider === "deepseek" && (
+                <>
+                  <label htmlFor="deepseek-key">DeepSeek API Key</label>
+                  <input
+                    id="deepseek-key"
+                    type="password"
+                    autoComplete="off"
+                    placeholder="填写 DeepSeek 开放平台密钥"
+                    value={deepseekApiKey}
+                    onChange={(event) => setDeepseekApiKey(event.target.value)}
+                    disabled={isWorking}
+                  />
+                  <p>仅用于内容拆解，不参与字幕转写。</p>
+                </>
+              )}
+              <p className="settings-privacy">
+                {needsOpenAIKey && analysisProvider === "deepseek" ? "两枚密钥" : "密钥"}只保存在当前页面内存中，不写入项目或浏览器存储。
+              </p>
+            </details>
             <p className="input-help" id="url-help">
-              使用前请确认你拥有下载与处理该内容的权利。单个音频建议不超过 24 MB。
+              {sourceMode === "url"
+                ? "使用前请确认你拥有下载与处理该内容的权利。单个音频建议不超过 24 MB。"
+                : "线上版本可直接拆解已有字幕，不需要调用本机 Whisper。字幕和密钥均不写入浏览器存储。"}
             </p>
+            {isWorking && (
+              <div className="inline-progress" role="status" aria-live="polite">
+                <span className="progress-spinner" aria-hidden="true" />
+                <div>
+                  <strong>{activeStageLabel}</strong>
+                  <p>已处理 {formatTime(elapsedSeconds)}，当前阶段为预计进度，请不要关闭页面。</p>
+                </div>
+                <button type="button" onClick={cancelAnalysis}>停止</button>
+              </div>
+            )}
           </form>
 
           {error && (
@@ -330,13 +850,17 @@ export default function Home() {
               <div>
                 <strong>这次没有处理成功</strong>
                 <p>{error}</p>
+                <div className="error-actions">
+                  <button type="button" onClick={() => void startAnalysis()}>重新处理</button>
+                  <button type="button" onClick={() => setSettingsOpen(true)}>检查配置</button>
+                </div>
               </div>
             </div>
           )}
         </div>
 
         <aside className="workflow-card" aria-label="处理流程">
-          <div className="card-index">PROCESS / 03</div>
+          <div className="card-index">PROCESS / 03 · 阶段为预计</div>
           <div className="wave-visual" aria-hidden="true">
             {[16, 34, 48, 26, 62, 44, 78, 32, 56, 88, 46, 68, 30, 52, 22, 40, 18].map((height, index) => (
               <i
@@ -411,7 +935,8 @@ export default function Home() {
           </div>
 
           {activeTab === "analysis" ? (
-            <div className="analysis-grid">
+            <>
+              <div className="analysis-grid">
               <article className="report-card summary-card">
                 <div className="card-label">内容结论</div>
                 <p className="summary-text">{result.analysis.summary}</p>
@@ -466,14 +991,18 @@ export default function Home() {
               <article className="report-card reusable-card">
                 <div className="card-label">可复用句式</div>
                 <div className="reusable-list">
-                  {result.analysis.reusableLines.map((line) => (
+                  {result.analysis.reusableLines.map((line, index) => (
                     <button
                       type="button"
                       key={line}
-                      onClick={() => navigator.clipboard.writeText(line)}
-                      title="点击复制"
+                      onClick={() => void copyReusableLine(line, index)}
+                      title={copiedLine === index ? "已复制" : "点击复制"}
                     >
-                      <span>{line}</span><i>＋</i>
+                      <span>{line}</span>
+                      <i aria-hidden="true">{copiedLine === index ? "✓" : "＋"}</i>
+                      <small aria-live="polite">
+                        {copiedLine === index ? "已复制" : "复制"}
+                      </small>
                     </button>
                   ))}
                 </div>
@@ -490,7 +1019,108 @@ export default function Home() {
                   {result.analysis.tags.map((tag) => <span key={tag}>#{tag}</span>)}
                 </div>
               </article>
-            </div>
+              </div>
+
+              <section className="rewrite-workbench" id="rewrite-workbench">
+                <div className="rewrite-intro">
+                  <p className="eyebrow"><span>03</span> COPY WORKBENCH</p>
+                  <h3>把拆解结果，变成你的项目文案。</h3>
+                  <p>
+                    沿用这条内容的架构、节奏和高光策略，但不照抄原句；只根据你填写的项目信息生成。
+                  </p>
+                  <div className="rewrite-source">
+                    <span>本次将借鉴</span>
+                    <strong>{result.analysis.structure.length} 个结构节点</strong>
+                    <strong>{result.analysis.highlights.length} 个高光策略</strong>
+                    <strong>{result.analysis.reusableLines.length} 个句式模板</strong>
+                  </div>
+                </div>
+
+                <form className="rewrite-form" onSubmit={generateRewrite}>
+                  <label htmlFor="project-info">
+                    项目信息
+                    <span>{projectInfo.length}/8000</span>
+                  </label>
+                  <textarea
+                    id="project-info"
+                    value={projectInfo}
+                    onChange={(event) => setProjectInfo(event.target.value.slice(0, 8000))}
+                    placeholder="例如：项目是什么、目标客户、核心卖点、真实数据、价格或活动、希望用户采取什么行动……"
+                    rows={7}
+                    disabled={rewriteStatus === "working"}
+                  />
+
+                  <div className="rewrite-options">
+                    <label>
+                      输出形式
+                      <select
+                        value={rewriteFormat}
+                        onChange={(event) => setRewriteFormat(event.target.value as RewriteFormat)}
+                        disabled={rewriteStatus === "working"}
+                      >
+                        {Object.entries(rewriteFormatLabels).map(([value, label]) => (
+                          <option value={value} key={value}>{label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      补充要求（选填）
+                      <input
+                        value={rewriteDirection}
+                        onChange={(event) => setRewriteDirection(event.target.value.slice(0, 1000))}
+                        placeholder="如：更克制、突出稀缺性、控制在 60 秒"
+                        disabled={rewriteStatus === "working"}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="rewrite-submit-row">
+                    <p>项目信息和密钥仅用于本次请求，不写入项目或浏览器存储。</p>
+                    <button type="submit" disabled={rewriteStatus === "working"}>
+                      {rewriteStatus === "working" ? "正在生成…" : `用 ${analysisService} 生成类似文案`}
+                    </button>
+                  </div>
+
+                  {rewriteError && (
+                    <p className="rewrite-error" role="alert">{rewriteError}</p>
+                  )}
+                </form>
+
+                {rewriteResult && (
+                  <article className="rewrite-output" aria-live="polite">
+                    <div className="rewrite-output-heading">
+                      <div>
+                        <span>生成结果 · {rewriteFormatLabels[rewriteFormat]}</span>
+                        <h4>{rewriteResult.title}</h4>
+                      </div>
+                      <button type="button" onClick={copyRewrite}>
+                        {rewriteCopied ? "已复制全文" : "复制文案"}
+                      </button>
+                    </div>
+                    <div className="rewrite-section">
+                      <b>开场</b>
+                      <p>{rewriteResult.hook}</p>
+                    </div>
+                    <div className="rewrite-section">
+                      <b>正文</b>
+                      <p>{rewriteResult.body}</p>
+                    </div>
+                    <div className="rewrite-section">
+                      <b>行动引导</b>
+                      <p>{rewriteResult.cta}</p>
+                    </div>
+                    <div className="rewrite-strategy">
+                      <b>这版如何借鉴原内容</b>
+                      {rewriteResult.strategy.map((item) => (
+                        <p key={`${item.source}-${item.adaptation}`}>
+                          <span>{item.source}</span>{item.adaptation}
+                        </p>
+                      ))}
+                    </div>
+                  </article>
+                )}
+              </section>
+            </>
           ) : (
             <div className="transcript-view">
               <div className="transcript-toolbar">
@@ -498,7 +1128,12 @@ export default function Home() {
                   <span className="live-dot" />
                   {result.source?.title || result.source?.filename || "视频字幕"}
                 </div>
-                <span>{result.transcript.length} 字</span>
+                <div className="transcript-actions">
+                  <span>{result.transcript.length} 字</span>
+                  <button type="button" onClick={copyTranscript}>
+                    {transcriptCopied ? "已复制字幕" : "复制全部字幕"}
+                  </button>
+                </div>
               </div>
               <div className="transcript-lines">
                 {result.segments.length > 0 ? result.segments.map((segment) => (
@@ -516,7 +1151,7 @@ export default function Home() {
       <footer className="site-footer">
         <div className="brand footer-brand"><span className="brand-mark">拆</span><span>拆片</span><em>AI</em></div>
         <p>让好内容，不止被看见一次。</p>
-        <span>Whisper × GPT</span>
+        <span>LOCAL WHISPER × DEEPSEEK</span>
       </footer>
     </main>
   );
