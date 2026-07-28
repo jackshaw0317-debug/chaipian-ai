@@ -382,21 +382,20 @@ export default function Home() {
   const transcriptionService =
     sourceMode === "transcript"
       ? "直接使用字幕"
-      : sourceMode === "upload"
-        ? "Groq Whisper"
-        : transcriptionProvider === "local"
-          ? "本机 Whisper"
-          : transcriptionProvider === "groq"
-            ? "Groq Whisper"
-            : "OpenAI Whisper";
+      : transcriptionProvider === "local"
+        ? "本机 Whisper"
+        : transcriptionProvider === "groq"
+          ? "Groq Whisper"
+          : "OpenAI Whisper";
   const needsOpenAIKey =
     analysisProvider === "openai" ||
-    (sourceMode === "url" && transcriptionProvider === "openai");
+    (sourceMode !== "transcript" && transcriptionProvider === "openai");
   const publicDeepseekTrial = capabilities?.deepseek.publicTrial === true;
   const publicGroqTrial = capabilities?.groq.publicTrial === true;
   const usesGroq =
-    sourceMode === "upload" ||
-    (sourceMode === "url" && transcriptionProvider === "groq");
+    sourceMode !== "transcript" && transcriptionProvider === "groq";
+  const localModeEnabled =
+    sourceMode !== "transcript" && transcriptionProvider === "local";
   const stages = [
     sourceMode === "transcript"
       ? { key: "download" as const, label: "读取字幕", detail: "使用你粘贴的字幕全文" }
@@ -410,7 +409,9 @@ export default function Home() {
         sourceMode === "transcript"
           ? "无需调用 Whisper"
           : sourceMode === "upload"
-            ? "上传至 Groq 并生成时间轴"
+            ? transcriptionProvider === "local"
+              ? "发送给本机 Whisper 并生成时间轴"
+              : "上传至 Groq 并生成时间轴"
             : "识别语音并生成时间轴",
     },
     {
@@ -540,21 +541,39 @@ export default function Home() {
     };
   }, []);
 
-  async function connectLocalServices(showError = false) {
+  async function connectLocalServices(showError = false, requireDownloader = true) {
     setLocalAccessRequested(true);
     setHealthChecking(true);
     const nextHealth = await checkLocalServices();
     setHealth(nextHealth);
     setHealthChecking(false);
-    if (showError && !nextHealth.ok) {
+    const requiredServicesReady = requireDownloader
+      ? nextHealth.ok
+      : nextHealth.services.whisper;
+    if (showError && !requiredServicesReady) {
       setError(
-        "没有连接到本机助手。请双击“启动拆片AI”，并在浏览器询问本地网络访问时选择“允许”，然后重试。",
+        requireDownloader
+          ? "没有连接到完整的本机助手。请双击“启动拆片AI”，并在浏览器询问本地网络访问时选择“允许”，然后重试。"
+          : "没有连接到本机 Whisper。请双击“启动拆片AI”，并在浏览器询问本地网络访问时选择“允许”，然后重试。",
       );
       setSettingsOpen(true);
-    } else if (nextHealth.ok && error.includes("本机")) {
+    } else if (requiredServicesReady && error.includes("本机")) {
       setError("");
     }
     return nextHealth;
+  }
+
+  async function toggleLocalMode(enabled: boolean) {
+    setError("");
+    setUrlNeedsUpload(false);
+    if (!enabled) {
+      setTranscriptionProvider("groq");
+      return;
+    }
+
+    setTranscriptionProvider("local");
+    setSettingsOpen(true);
+    await connectLocalServices(true, sourceMode === "url");
   }
 
   function focusSetting(id: "deepseek-key" | "openai-key" | "groq-key") {
@@ -628,10 +647,12 @@ export default function Home() {
     }
 
     const useLocalPipeline =
-      sourceMode === "url" && transcriptionProvider === "local";
+      sourceMode !== "transcript" && transcriptionProvider === "local";
     if (useLocalPipeline) {
-      const nextHealth = await connectLocalServices(true);
-      if (!nextHealth.ok) return;
+      const nextHealth = await connectLocalServices(true, sourceMode === "url");
+      const localServiceReady =
+        sourceMode === "upload" ? nextHealth.services.whisper : nextHealth.ok;
+      if (!localServiceReady) return;
     }
 
     setError("");
@@ -663,7 +684,7 @@ export default function Home() {
     try {
       let localFilename = "";
       let localTranscription: LocalTranscription | null = null;
-      if (useLocalPipeline) {
+      if (useLocalPipeline && sourceMode === "url") {
         setStage("download");
         const media = await downloadVideoLocally(
           url.trim(),
@@ -674,6 +695,19 @@ export default function Home() {
         setStage("transcribe");
         localTranscription = await transcribeMediaLocally(
           media,
+          language,
+          controller.signal,
+        );
+        setStage("analyze");
+      } else if (useLocalPipeline && sourceMode === "upload" && uploadFile) {
+        setStage("transcribe");
+        localFilename = uploadFile.name;
+        localTranscription = await transcribeMediaLocally(
+          {
+            data: await uploadFile.arrayBuffer(),
+            contentType: uploadFile.type || "application/octet-stream",
+            filename: uploadFile.name,
+          },
           language,
           controller.signal,
         );
@@ -717,7 +751,7 @@ export default function Home() {
           language,
           focus,
           analysisProvider,
-          transcriptionProvider: sourceMode === "upload" ? "groq" : transcriptionProvider,
+          transcriptionProvider,
           cookieBrowser: cookieBrowser === "none" ? undefined : cookieBrowser,
           openaiApiKey: openaiApiKey.trim() || undefined,
           deepseekApiKey: deepseekApiKey.trim() || undefined,
@@ -985,7 +1019,9 @@ export default function Home() {
                 aria-selected={sourceMode === "upload"}
                 onClick={() => {
                   setSourceMode("upload");
-                  setTranscriptionProvider("groq");
+                  if (transcriptionProvider === "openai") {
+                    setTranscriptionProvider("groq");
+                  }
                 }}
                 disabled={isWorking}
               >
@@ -1136,11 +1172,35 @@ export default function Home() {
                   <small>{publicGroqTrial ? "云端可用" : "待配置"}</small>
                 </div>
               </div>
-              {sourceMode === "url" && transcriptionProvider === "local" && (
+              {sourceMode !== "transcript" && (
+                <div className={`local-mode-control ${localModeEnabled ? "enabled" : ""}`}>
+                  <div>
+                    <strong>使用本机处理</strong>
+                    <span>
+                      {localModeEnabled
+                        ? sourceMode === "upload"
+                          ? "已开启：文件交给本机 Whisper，不消耗 Groq 次数"
+                          : "已开启：视频下载和 Whisper 转写均调用本机助手"
+                        : "已关闭：当前使用 Groq 云端转写"}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-label="使用本机处理"
+                    aria-checked={localModeEnabled}
+                    onClick={() => void toggleLocalMode(!localModeEnabled)}
+                    disabled={isWorking || sourceMode === "transcript"}
+                  >
+                    <span aria-hidden="true" />
+                  </button>
+                </div>
+              )}
+              {sourceMode !== "transcript" && transcriptionProvider === "local" && (
                 <div className="local-service-actions">
                   <button
                     type="button"
-                    onClick={() => void connectLocalServices(true)}
+                    onClick={() => void connectLocalServices(true, sourceMode === "url")}
                     disabled={isWorking || healthChecking}
                   >
                     {healthChecking
@@ -1151,7 +1211,9 @@ export default function Home() {
                   </button>
                   <span>
                     {pageRuntime === "hosted"
-                      ? "首次连接时，请在浏览器提示中允许访问本地网络。"
+                      ? sourceMode === "upload"
+                        ? "上传文件只需要连接本机 Whisper；首次连接请允许访问本地网络。"
+                        : "首次连接时，请在浏览器提示中允许访问本地网络。"
                       : "启动窗口保持打开，本机下载与转写才能持续工作。"}
                   </span>
                 </div>
@@ -1162,14 +1224,22 @@ export default function Home() {
                   <select
                     id="transcription-provider"
                     value={transcriptionProvider}
-                    onChange={(event) =>
-                      setTranscriptionProvider(event.target.value as "local" | "openai" | "groq")
-                    }
+                    onChange={(event) => {
+                      const provider = event.target.value as "local" | "openai" | "groq";
+                      if (provider === "local") {
+                        void toggleLocalMode(true);
+                      } else {
+                        setTranscriptionProvider(provider);
+                        setError("");
+                      }
+                    }}
                     disabled={isWorking}
                   >
                     <option value="groq">Groq Whisper（线上推荐）</option>
                     <option value="local">本机 Whisper</option>
-                    <option value="openai">OpenAI Whisper API</option>
+                    {sourceMode === "url" && (
+                      <option value="openai">OpenAI Whisper API</option>
+                    )}
                   </select>
                 </label>
                 <label className="settings-field" htmlFor="analysis-provider">
@@ -1216,11 +1286,13 @@ export default function Home() {
                   </p>
                 </>
               )}
-              {sourceMode === "url" && transcriptionProvider === "local" && (
+              {sourceMode !== "transcript" && transcriptionProvider === "local" && (
                 <p className="local-whisper-note">
-                  {pageRuntime === "hosted"
-                    ? "线上网页只把视频交给你电脑上的本机助手，字幕仍在这台电脑上处理，无需 OpenAI Key。"
-                    : "字幕在这台电脑上处理，无需 OpenAI Key。首次使用会下载 Whisper base 模型，之后可离线转写。"}
+                  {sourceMode === "upload"
+                    ? "上传的文件直接交给你电脑上的本机 Whisper，不经过 Groq，也不会消耗云端转写次数。"
+                    : pageRuntime === "hosted"
+                      ? "线上网页只把视频交给你电脑上的本机助手，字幕仍在这台电脑上处理，无需 OpenAI Key。"
+                      : "字幕在这台电脑上处理，无需 OpenAI Key。首次使用会下载 Whisper base 模型，之后可离线转写。"}
                 </p>
               )}
               {usesGroq && (
@@ -1306,7 +1378,9 @@ export default function Home() {
                     ? "音视频直链可由 Groq 在线转写；平台分享链接如无法读取，请改用“上传音视频”或“粘贴字幕”。"
                     : "使用前请确认你拥有下载与处理该内容的权利。单个音频建议不超过 24 MB。"
                 : sourceMode === "upload"
-                  ? "文件会发送到 Groq 进行临时转写，不在本站保存；请确认你拥有处理该内容的权利。"
+                  ? transcriptionProvider === "local"
+                    ? "本机模式开启后，文件只交给本机 Whisper 转写，不经过 Groq。"
+                    : "文件会发送到 Groq 进行临时转写，不在本站保存；请确认你拥有处理该内容的权利。"
                   : publicDeepseekTrial
                   ? "线上版本可直接拆解已有字幕，不需要调用本机 Whisper，也不需要访客填写 DeepSeek 密钥。"
                   : "线上版本可直接拆解已有字幕，不需要调用本机 Whisper。字幕和密钥均不写入浏览器存储。"}

@@ -82,6 +82,9 @@ test("项目不再包含启动占位页，并保留本地隐私约束", async ()
   assert.match(page, /transcriptText/);
   assert.match(page, /targetAddressSpace: "loopback"/);
   assert.match(page, /连接本机助手/);
+  assert.match(page, /role="switch"/);
+  assert.match(page, /使用本机处理/);
+  assert.match(page, /uploadFile\.arrayBuffer/);
   assert.match(page, /transcribeMediaLocally/);
   assert.match(layout, /拆片 AI｜视频转字幕与内容拆解/);
   assert.match(healthRoute, /127\.0\.0\.1:4317\/health/);
