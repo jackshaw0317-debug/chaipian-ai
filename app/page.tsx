@@ -64,6 +64,9 @@ type SiteCapabilities = {
     dailyTranscribeLimit: number;
     maxFileBytes: number;
   };
+  downloader: {
+    cloudAvailable: boolean;
+  };
 };
 
 type LocalMedia = {
@@ -83,6 +86,30 @@ type LoopbackRequestInit = RequestInit & {
 
 const LOCAL_DOWNLOADER_URL = "http://127.0.0.1:4317";
 const LOCAL_TRANSCRIBER_URL = "http://127.0.0.1:4318";
+
+const PLATFORM_PAGE_HOSTS = [
+  "douyin.com",
+  "iesdouyin.com",
+  "xiaohongshu.com",
+  "xhslink.com",
+  "bilibili.com",
+  "b23.tv",
+  "youtube.com",
+  "youtu.be",
+  "tiktok.com",
+  "instagram.com",
+];
+
+function isPlatformSharePage(value: string) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return PLATFORM_PAGE_HOSTS.some(
+      (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
+    );
+  } catch {
+    return false;
+  }
+}
 
 function fetchLoopback(input: string, init: RequestInit = {}) {
   return fetch(input, {
@@ -328,6 +355,7 @@ export default function Home() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [activeTab, setActiveTab] = useState<"analysis" | "transcript">("analysis");
   const [error, setError] = useState("");
+  const [urlNeedsUpload, setUrlNeedsUpload] = useState(false);
   const [copied, setCopied] = useState(false);
   const [transcriptCopied, setTranscriptCopied] = useState(false);
   const [copiedLine, setCopiedLine] = useState<number | null>(null);
@@ -537,6 +565,7 @@ export default function Home() {
   }
 
   async function startAnalysis() {
+    setUrlNeedsUpload(false);
     if (sourceMode === "url") {
       if (!url.trim()) {
         setError("请先粘贴一个视频链接，或点击“体验示例”。");
@@ -548,6 +577,19 @@ export default function Home() {
         if (!["http:", "https:"].includes(parsed.protocol)) throw new Error();
       } catch {
         setError("请输入完整的 http 或 https 视频链接。");
+        return;
+      }
+
+      if (
+        pageRuntime === "hosted" &&
+        transcriptionProvider === "groq" &&
+        !capabilities?.downloader.cloudAvailable &&
+        isPlatformSharePage(url.trim())
+      ) {
+        setUrlNeedsUpload(true);
+        setError(
+          "这是平台分享页，不是可直接读取的音视频文件。当前云端下载器尚未启用，请改用“上传音视频”或“粘贴字幕”。",
+        );
         return;
       }
     } else if (sourceMode === "upload") {
@@ -724,7 +766,12 @@ export default function Home() {
       } else if (caught instanceof TypeError) {
         setError("网页服务连接中断，请稍后重试。");
       } else {
-        setError(caught instanceof Error ? caught.message : "处理失败，请稍后重试。");
+        const message = caught instanceof Error ? caught.message : "处理失败，请稍后重试。";
+        setUrlNeedsUpload(
+          sourceMode === "url" &&
+          (message.includes("上传音视频") || message.includes("平台分享页")),
+        );
+        setError(message);
       }
     } finally {
       if (progressTimer) window.clearTimeout(progressTimer);
@@ -742,6 +789,16 @@ export default function Home() {
   function cancelAnalysis() {
     cancelRequestedRef.current = true;
     abortRef.current?.abort();
+  }
+
+  function switchSourceMode(mode: "upload" | "transcript") {
+    setSourceMode(mode);
+    setStage("idle");
+    setError("");
+    setUrlNeedsUpload(false);
+    window.requestAnimationFrame(() => {
+      document.getElementById(mode === "upload" ? "media-upload" : "transcript-input")?.focus();
+    });
   }
 
   async function loadDemo() {
@@ -1273,8 +1330,17 @@ export default function Home() {
                 <strong>这次没有处理成功</strong>
                 <p>{error}</p>
                 <div className="error-actions">
-                  <button type="button" onClick={() => void startAnalysis()}>重新处理</button>
-                  <button type="button" onClick={() => setSettingsOpen(true)}>检查配置</button>
+                  {urlNeedsUpload ? (
+                    <>
+                      <button type="button" onClick={() => switchSourceMode("upload")}>改用上传音视频</button>
+                      <button type="button" onClick={() => switchSourceMode("transcript")}>粘贴字幕</button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" onClick={() => void startAnalysis()}>重新处理</button>
+                      <button type="button" onClick={() => setSettingsOpen(true)}>检查配置</button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>

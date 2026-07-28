@@ -108,11 +108,17 @@ function friendlyError(message: string) {
   if (lower.includes("too large") || lower.includes("maximum") || lower.includes("24 mb")) {
     return "音频超过 24 MB。请改用更短的视频，或在下载服务中降低音频码率。";
   }
-  if (lower.includes("downloader") || lower.includes("cobalt")) {
+  if (lower.includes("local downloader failed")) {
     const detail = message.replace(/^Local downloader failed:\s*/i, "").trim();
     return detail && detail !== message
       ? `本地视频下载失败：${detail}`
       : "本地视频下载服务没有成功处理这个链接。请确认服务正在运行、链接可公开访问，或改用更短的视频。";
+  }
+  if (lower.includes("downloader service is not configured")) {
+    return "这是平台分享页，不是可直接读取的音视频文件。当前云端下载器尚未启用，请改用“上传音视频”或“粘贴字幕”。";
+  }
+  if (lower.includes("downloader") || lower.includes("cobalt")) {
+    return "云端下载器暂时无法读取这个平台链接，请改用“上传音视频”或“粘贴字幕”。";
   }
   return message || "处理失败，请稍后重试。";
 }
@@ -707,30 +713,6 @@ export async function POST(request: Request) {
     if (analysisProvider === "deepseek" && deepseekApiKey!.length < 20) {
       return NextResponse.json({ error: "DeepSeek API Key 格式不正确，请检查后重试。" }, { status: 400 });
     }
-    if (usingHostedDeepseek) {
-      const allowance = await consumePublicAllowance(request, "analyze");
-      if (!allowance.allowed) {
-        return NextResponse.json(
-          { error: allowance.message },
-          {
-            status: 429,
-            headers: { "Retry-After": String(allowance.retryAfterSeconds) },
-          },
-        );
-      }
-    }
-    if (usingHostedGroq) {
-      const allowance = await consumePublicAllowance(request, "transcribe");
-      if (!allowance.allowed) {
-        return NextResponse.json(
-          { error: allowance.message },
-          {
-            status: 429,
-            headers: { "Retry-After": String(allowance.retryAfterSeconds) },
-          },
-        );
-      }
-    }
     if (!providedTranscript && (!body.url || body.url.length > 2048)) {
       return NextResponse.json({ error: "请提供有效的视频链接。" }, { status: 400 });
     }
@@ -744,6 +726,18 @@ export async function POST(request: Request) {
     const media = providedTranscript
       ? null
       : await resolveMedia(safeUrl(body.url!), cookieBrowser);
+    if (usingHostedGroq) {
+      const allowance = await consumePublicAllowance(request, "transcribe");
+      if (!allowance.allowed) {
+        return NextResponse.json(
+          { error: allowance.message },
+          {
+            status: 429,
+            headers: { "Retry-After": String(allowance.retryAfterSeconds) },
+          },
+        );
+      }
+    }
     const transcription = providedTranscript
       ? { text: providedTranscript, segments: providedSegments }
       : transcriptionProvider === "local"
@@ -751,6 +745,18 @@ export async function POST(request: Request) {
         : transcriptionProvider === "groq"
           ? await transcribeAudioWithGroq(media!, body.language || "auto", groqApiKey!)
           : await transcribeAudio(media!, body.language || "auto", openaiApiKey!);
+    if (usingHostedDeepseek) {
+      const allowance = await consumePublicAllowance(request, "analyze");
+      if (!allowance.allowed) {
+        return NextResponse.json(
+          { error: allowance.message },
+          {
+            status: 429,
+            headers: { "Retry-After": String(allowance.retryAfterSeconds) },
+          },
+        );
+      }
+    }
     const analysis =
       analysisProvider === "deepseek"
         ? await analyzeTranscriptWithDeepSeek(

@@ -52,6 +52,7 @@ test("项目不再包含启动占位页，并保留本地隐私约束", async ()
     analyzeRoute,
     transcribeRoute,
     rewriteRoute,
+    capabilitiesRoute,
     downloader,
     transcriber,
     startScript,
@@ -63,6 +64,7 @@ test("项目不再包含启动占位页，并保留本地隐私约束", async ()
     readFile(new URL("../app/api/analyze/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/transcribe/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/rewrite/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/capabilities/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../scripts/local-downloader.mjs", import.meta.url), "utf8"),
     readFile(new URL("../scripts/local-transcriber.py", import.meta.url), "utf8"),
     readFile(new URL("../scripts/start-local.ps1", import.meta.url), "utf8"),
@@ -71,6 +73,8 @@ test("项目不再包含启动占位页，并保留本地隐私约束", async ()
   assert.match(page, /密钥不落盘/);
   assert.match(page, /自动使用临时 Edge/);
   assert.match(page, /重新处理/);
+  assert.match(page, /改用上传音视频/);
+  assert.match(page, /isPlatformSharePage/);
   assert.match(page, /停止本次处理/);
   assert.match(page, /复制全部字幕/);
   assert.match(page, /把拆解结果，变成你的项目文案/);
@@ -84,6 +88,8 @@ test("项目不再包含启动占位页，并保留本地隐私约束", async ()
   assert.match(healthRoute, /127\.0\.0\.1:4318\/health/);
   assert.match(analyzeRoute, /transcriptSegments/);
   assert.match(analyzeRoute, /api\.groq\.com\/openai\/v1\/audio\/transcriptions/);
+  assert.match(analyzeRoute, /当前云端下载器尚未启用/);
+  assert.match(capabilitiesRoute, /cloudAvailable/);
   assert.match(transcribeRoute, /MAX_FILE_BYTES = 25 \* 1024 \* 1024/);
   assert.match(transcribeRoute, /consumePublicAllowance\(request, "transcribe"\)/);
   assert.match(rewriteRoute, /唯一事实来源/);

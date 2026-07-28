@@ -18,6 +18,9 @@ export async function GET() {
         dailyTranscribeLimit: trial.dailyTranscribeLimit,
         maxFileBytes: 25 * 1024 * 1024,
       },
+      downloader: {
+        cloudAvailable: Boolean(process.env.COBALT_API_URL?.trim()),
+      },
     },
     {
       headers: {
