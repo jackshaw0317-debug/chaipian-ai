@@ -1,0 +1,63 @@
+name: 问题反馈
+description: 报告可以稳定复现的错误或异常行为
+title: "[问题] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请不要在公开 Issue 中粘贴 API 密钥、访问令牌、私有媒体或完整用户数据。安全漏洞请按照 SECURITY.md 私密报告。
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 使用模式
+      options:
+        - 在线版
+        - 本地版
+        - 在线页面连接本机助手
+        - 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 实际发生了什么？你原本期望什么？
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 选择……
+        2. 输入……
+        3. 点击……
+        4. 出现……
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: 系统与浏览器
+      placeholder: Windows 11 / Edge 版本……
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏后的错误信息
+      description: 请删除密钥、Cookie、个人路径和用户内容后再粘贴。
+      render: shell
+
+  - type: checkboxes
+    id: rights
+    attributes:
+      label: 内容权利确认
+      options:
+        - label: 我只使用了自己拥有权利或已获授权的测试内容
+          required: true

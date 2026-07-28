@@ -20,7 +20,11 @@
 
 # misc
 .DS_Store
+Thumbs.db
 *.pem
+*.key
+*.p12
+*.pfx
 
 # debug
 npm-debug.log*
@@ -44,5 +48,9 @@ next-env.d.ts
 /.local-tools/
 /outputs/
 /work/
+/dns/
+/tmp/
+/temp/
+*.zip
 __pycache__/
 *.pyc

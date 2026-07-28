@@ -1,5 +1,5 @@
 {
-  "name": "site-creator-vinext-starter",
+  "name": "chaipian-ai",
   "version": "0.1.0",
   "private": true,
   "engines": {
@@ -7,11 +7,13 @@
   },
   "scripts": {
     "dev": "vinext dev",
+    "local:setup": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& ([scriptblock]::Create((Get-Content -Raw -Encoding UTF8 'scripts/setup-local.ps1')))\"",
     "local:downloader": "node scripts/local-downloader.mjs",
     "local:start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& ([scriptblock]::Create((Get-Content -Raw -Encoding UTF8 'scripts/start-local.ps1')))\"",
     "build": "vinext build",
     "start": "vinext start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "test": "npm run build && node --test",
+    "check": "npm run lint && npm run test",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },

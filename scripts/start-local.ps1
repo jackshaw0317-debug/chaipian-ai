@@ -1,26 +1,57 @@
 $ErrorActionPreference = "Stop"
 
 $projectRoot = (Get-Location).Path
-$bundledPython = "C:\Users\jacks\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
-$pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-$pythonExecutable = if ($env:PYTHON_EXECUTABLE -and (Test-Path -LiteralPath $env:PYTHON_EXECUTABLE)) {
-  $env:PYTHON_EXECUTABLE
-} elseif (Test-Path -LiteralPath $bundledPython) {
-  $bundledPython
-} elseif ($pythonCommand) {
-  $pythonCommand.Source
-} else {
-  throw "未找到可用的 Python。"
+
+function Find-PythonExecutable {
+  if ($env:PYTHON_EXECUTABLE -and (Test-Path -LiteralPath $env:PYTHON_EXECUTABLE)) {
+    return $env:PYTHON_EXECUTABLE
+  }
+
+  foreach ($commandName in @("python", "python3")) {
+    $command = Get-Command $commandName -ErrorAction SilentlyContinue
+    if ($command) {
+      & $command.Source -c "import sys" *> $null
+      if ($LASTEXITCODE -eq 0) {
+        return $command.Source
+      }
+    }
+  }
+
+  if ($env:USERPROFILE) {
+    $codexPython = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
+    if (Test-Path -LiteralPath $codexPython) {
+      return $codexPython
+    }
+  }
+
+  throw "未找到可用的 Python 3。请先安装 Python 3.10 或更高版本，或设置 PYTHON_EXECUTABLE。"
+}
+
+$pythonExecutable = Find-PythonExecutable
+$npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if (-not $npmCommand) {
+  throw "未找到 npm。请先安装 Node.js 22.13 或更高版本。"
+}
+
+if (-not (Test-Path -LiteralPath (Join-Path $projectRoot "node_modules"))) {
+  Write-Host ""
+  Write-Host "首次运行需要安装网页依赖…" -ForegroundColor Yellow
+  & npm.cmd ci
+  if ($LASTEXITCODE -ne 0) {
+    throw "网页依赖安装失败。请确认网络可用后重试。"
+  }
 }
 
 $toolRoot = Join-Path $projectRoot ".local-tools\yt-dlp"
-if (-not (Test-Path -LiteralPath (Join-Path $toolRoot "yt_dlp"))) {
-  throw "本地下载组件尚未安装，请先在 Codex 中完成初始化。"
-}
-
 $whisperRoot = Join-Path $projectRoot ".local-tools\whisper"
-if (-not (Test-Path -LiteralPath (Join-Path $whisperRoot "faster_whisper"))) {
-  throw "本地 Whisper 组件尚未安装，请先在 Codex 中完成初始化。"
+
+if (
+  -not (Test-Path -LiteralPath (Join-Path $toolRoot "yt_dlp")) -or
+  -not (Test-Path -LiteralPath (Join-Path $whisperRoot "faster_whisper"))
+) {
+  Write-Host ""
+  Write-Host "首次运行需要安装本地视频读取与 Whisper 组件。" -ForegroundColor Yellow
+  & ([scriptblock]::Create((Get-Content -Raw -Encoding UTF8 "scripts/setup-local.ps1")))
 }
 
 function Test-LocalUrl([string]$url) {
