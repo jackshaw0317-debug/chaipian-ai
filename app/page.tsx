@@ -53,6 +53,14 @@ type LocalHealth = {
   checkedAt: string;
 };
 
+type SiteCapabilities = {
+  deepseek: {
+    publicTrial: boolean;
+    dailyAnalyzeLimit: number;
+    dailyRewriteLimit: number;
+  };
+};
+
 type LocalMedia = {
   data: ArrayBuffer;
   contentType: string;
@@ -319,6 +327,7 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [health, setHealth] = useState<LocalHealth | null>(null);
   const [healthChecking, setHealthChecking] = useState(true);
+  const [capabilities, setCapabilities] = useState<SiteCapabilities | null>(null);
   const [pageRuntime, setPageRuntime] = useState<"unknown" | "local" | "hosted">("unknown");
   const [localAccessRequested, setLocalAccessRequested] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -344,6 +353,7 @@ export default function Home() {
   const needsOpenAIKey =
     analysisProvider === "openai" ||
     (sourceMode === "url" && transcriptionProvider === "openai");
+  const publicDeepseekTrial = capabilities?.deepseek.publicTrial === true;
   const stages = [
     sourceMode === "transcript"
       ? { key: "download" as const, label: "读取字幕", detail: "使用你粘贴的字幕全文" }
@@ -426,7 +436,9 @@ export default function Home() {
   useEffect(() => {
     let active = true;
     const localPage = ["localhost", "127.0.0.1"].includes(window.location.hostname);
-    setPageRuntime(localPage ? "local" : "hosted");
+    window.setTimeout(() => {
+      if (active) setPageRuntime(localPage ? "local" : "hosted");
+    }, 0);
 
     async function refreshHealth() {
       if (!localPage) {
@@ -452,6 +464,18 @@ export default function Home() {
       }
     }
 
+    async function refreshCapabilities() {
+      try {
+        const response = await fetch("/api/capabilities", { cache: "no-store" });
+        if (!response.ok) return;
+        const payload = (await response.json()) as SiteCapabilities;
+        if (active) setCapabilities(payload);
+      } catch {
+        if (active) setCapabilities(null);
+      }
+    }
+
+    void refreshCapabilities();
     void refreshHealth();
     const timer = window.setInterval(refreshHealth, 30_000);
     return () => {
@@ -504,7 +528,11 @@ export default function Home() {
       return;
     }
 
-    if (analysisProvider === "deepseek" && deepseekApiKey.trim().length < 20) {
+    if (
+      analysisProvider === "deepseek" &&
+      !publicDeepseekTrial &&
+      deepseekApiKey.trim().length < 20
+    ) {
       setError("请先在“服务配置”中填写有效的 DeepSeek API Key。");
       focusSetting("deepseek-key");
       return;
@@ -706,7 +734,11 @@ export default function Home() {
       setRewriteError("请至少填写 10 个字的项目信息，让生成内容有事实依据。");
       return;
     }
-    if (analysisProvider === "deepseek" && deepseekApiKey.trim().length < 20) {
+    if (
+      analysisProvider === "deepseek" &&
+      !publicDeepseekTrial &&
+      deepseekApiKey.trim().length < 20
+    ) {
       setRewriteError("请先在“服务配置”中填写有效的 DeepSeek API Key。");
       focusSetting("deepseek-key");
       return;
@@ -899,6 +931,16 @@ export default function Home() {
                 体验示例 <span>↘</span>
               </button>
             </div>
+            {analysisProvider === "deepseek" && publicDeepseekTrial && (
+              <div className="public-trial-note" role="status">
+                <span>FREE</span>
+                <p>
+                  <strong>本站已提供 DeepSeek 免费体验额度</strong>
+                  无需填写密钥；每位访客每天可拆解 {capabilities.deepseek.dailyAnalyzeLimit} 次、
+                  生成文案 {capabilities.deepseek.dailyRewriteLimit} 次。
+                </p>
+              </div>
+            )}
             <details
               className="local-settings"
               open={settingsOpen}
@@ -1016,21 +1058,33 @@ export default function Home() {
               )}
               {analysisProvider === "deepseek" && (
                 <>
-                  <label htmlFor="deepseek-key">DeepSeek API Key</label>
+                  <label htmlFor="deepseek-key">
+                    {publicDeepseekTrial ? "自己的 DeepSeek API Key（可选）" : "DeepSeek API Key"}
+                  </label>
                   <input
                     id="deepseek-key"
                     type="password"
                     autoComplete="off"
-                    placeholder="填写 DeepSeek 开放平台密钥"
+                    placeholder={
+                      publicDeepseekTrial
+                        ? "留空即可使用本站免费额度"
+                        : "填写 DeepSeek 开放平台密钥"
+                    }
                     value={deepseekApiKey}
                     onChange={(event) => setDeepseekApiKey(event.target.value)}
                     disabled={isWorking}
                   />
-                  <p>仅用于内容拆解，不参与字幕转写。</p>
+                  <p>
+                    {publicDeepseekTrial
+                      ? "达到免费次数后，可临时填写自己的密钥继续使用；密钥不会被网站保存。"
+                      : "仅用于内容拆解，不参与字幕转写。"}
+                  </p>
                 </>
               )}
               <p className="settings-privacy">
-                {needsOpenAIKey && analysisProvider === "deepseek" ? "两枚密钥" : "密钥"}只保存在当前页面内存中，不写入项目或浏览器存储。
+                {publicDeepseekTrial && analysisProvider === "deepseek"
+                  ? "本站 DeepSeek 密钥只保存在服务器；访客无法查看。你自行填写的密钥只停留在当前页面内存。"
+                  : `${needsOpenAIKey && analysisProvider === "deepseek" ? "两枚密钥" : "密钥"}只保存在当前页面内存中，不写入项目或浏览器存储。`}
               </p>
             </details>
             <p className="input-help" id="url-help">
@@ -1038,7 +1092,9 @@ export default function Home() {
                 ? pageRuntime === "hosted" && transcriptionProvider === "local"
                   ? "线上页面需要先连接本机助手。使用前请确认你拥有下载与处理该内容的权利。"
                   : "使用前请确认你拥有下载与处理该内容的权利。单个音频建议不超过 24 MB。"
-                : "线上版本可直接拆解已有字幕，不需要调用本机 Whisper。字幕和密钥均不写入浏览器存储。"}
+                : publicDeepseekTrial
+                  ? "线上版本可直接拆解已有字幕，不需要调用本机 Whisper，也不需要访客填写 DeepSeek 密钥。"
+                  : "线上版本可直接拆解已有字幕，不需要调用本机 Whisper。字幕和密钥均不写入浏览器存储。"}
             </p>
             {isWorking && (
               <div className="inline-progress" role="status" aria-live="polite">
@@ -1359,7 +1415,7 @@ export default function Home() {
       <footer className="site-footer">
         <div className="brand footer-brand"><span className="brand-mark">拆</span><span>拆片</span><em>AI</em></div>
         <p>让好内容，不止被看见一次。</p>
-        <span>LOCAL WHISPER × DEEPSEEK</span>
+        <span>{publicDeepseekTrial ? "PUBLIC TRIAL × DEEPSEEK" : "LOCAL WHISPER × DEEPSEEK"}</span>
       </footer>
     </main>
   );

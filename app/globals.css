@@ -377,6 +377,40 @@ main {
   line-height: 1.6;
 }
 
+.public-trial-note {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 14px;
+  border: 1px solid #99ad34;
+  background: #f1f7d5;
+  padding: 12px 14px;
+  color: #3f481b;
+}
+
+.public-trial-note > span {
+  flex: 0 0 auto;
+  background: var(--ink);
+  color: var(--lime);
+  padding: 5px 8px;
+  font-family: var(--font-display), monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+
+.public-trial-note p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.public-trial-note strong {
+  display: block;
+  color: var(--ink);
+  font-size: 12px;
+}
+
 .local-settings {
   margin-top: 14px;
   border-top: 1px solid var(--line);

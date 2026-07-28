@@ -1,4 +1,8 @@
 import { NextResponse } from "next/server";
+import {
+  consumePublicAllowance,
+  isSameOriginRequest,
+} from "../../lib/public-ai-access";
 
 export const runtime = "edge";
 
@@ -552,6 +556,13 @@ async function analyzeTranscriptWithDeepSeek(transcript: string, focus: string, 
 
 export async function POST(request: Request) {
   try {
+    if (!isSameOriginRequest(request)) {
+      return NextResponse.json({ error: "请求来源无效。" }, { status: 403 });
+    }
+    const contentLength = Number(request.headers.get("content-length") || "0");
+    if (contentLength > 300_000) {
+      return NextResponse.json({ error: "提交内容过长，请精简后重试。" }, { status: 413 });
+    }
     const body = (await request.json()) as {
       url?: string;
       transcriptText?: string;
@@ -574,9 +585,12 @@ export async function POST(request: Request) {
     const transcriptionProvider: TranscriptionProvider =
       body.transcriptionProvider === "openai" ? "openai" : "local";
     const openaiApiKey =
-      process.env.OPENAI_API_KEY?.trim() || body.openaiApiKey?.trim() || body.apiKey?.trim();
-    const deepseekApiKey =
-      process.env.DEEPSEEK_API_KEY?.trim() || body.deepseekApiKey?.trim();
+      body.openaiApiKey?.trim() || body.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
+    const userDeepseekApiKey = body.deepseekApiKey?.trim();
+    const hostedDeepseekApiKey = process.env.DEEPSEEK_API_KEY?.trim();
+    const deepseekApiKey = userDeepseekApiKey || hostedDeepseekApiKey;
+    const usingHostedDeepseek =
+      analysisProvider === "deepseek" && !userDeepseekApiKey && Boolean(hostedDeepseekApiKey);
     const providedTranscript = body.transcriptText?.trim().slice(0, MAX_TRANSCRIPT_CHARS) || "";
     const providedSegments = Array.isArray(body.transcriptSegments)
       ? body.transcriptSegments
@@ -616,6 +630,18 @@ export async function POST(request: Request) {
     if (analysisProvider === "deepseek" && deepseekApiKey!.length < 20) {
       return NextResponse.json({ error: "DeepSeek API Key 格式不正确，请检查后重试。" }, { status: 400 });
     }
+    if (usingHostedDeepseek) {
+      const allowance = await consumePublicAllowance(request, "analyze");
+      if (!allowance.allowed) {
+        return NextResponse.json(
+          { error: allowance.message },
+          {
+            status: 429,
+            headers: { "Retry-After": String(allowance.retryAfterSeconds) },
+          },
+        );
+      }
+    }
     if (!providedTranscript && (!body.url || body.url.length > 2048)) {
       return NextResponse.json({ error: "请提供有效的视频链接。" }, { status: 400 });
     }
@@ -637,7 +663,9 @@ export async function POST(request: Request) {
     const analysis =
       analysisProvider === "deepseek"
         ? await analyzeTranscriptWithDeepSeek(
-            transcription.text,
+            usingHostedDeepseek
+              ? transcription.text.slice(0, 40_000)
+              : transcription.text,
             body.focus || "growth",
             deepseekApiKey!,
           )

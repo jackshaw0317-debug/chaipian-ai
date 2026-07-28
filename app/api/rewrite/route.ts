@@ -1,4 +1,10 @@
 import { NextResponse } from "next/server";
+import {
+  consumePublicAllowance,
+  isSameOriginRequest,
+} from "../../lib/public-ai-access";
+
+export const runtime = "edge";
 
 type Provider = "deepseek" | "openai";
 type RewriteFormat = "short-video" | "xiaohongshu" | "private-domain" | "advertising";
@@ -213,6 +219,13 @@ function friendlyError(message: string) {
 
 export async function POST(request: Request) {
   try {
+    if (!isSameOriginRequest(request)) {
+      return NextResponse.json({ error: "请求来源无效。" }, { status: 403 });
+    }
+    const contentLength = Number(request.headers.get("content-length") || "0");
+    if (contentLength > 180_000) {
+      return NextResponse.json({ error: "提交内容过长，请精简后重试。" }, { status: 413 });
+    }
     const body = (await request.json()) as Record<string, unknown>;
     const provider: Provider = body.analysisProvider === "openai" ? "openai" : "deepseek";
     const format = (
@@ -240,15 +253,28 @@ export async function POST(request: Request) {
     }
 
     const openaiApiKey =
-      process.env.OPENAI_API_KEY?.trim() || safeString(body.openaiApiKey, 300);
-    const deepseekApiKey =
-      process.env.DEEPSEEK_API_KEY?.trim() || safeString(body.deepseekApiKey, 300);
+      safeString(body.openaiApiKey, 300) || process.env.OPENAI_API_KEY?.trim();
+    const userDeepseekApiKey = safeString(body.deepseekApiKey, 300);
+    const hostedDeepseekApiKey = process.env.DEEPSEEK_API_KEY?.trim();
+    const deepseekApiKey = userDeepseekApiKey || hostedDeepseekApiKey;
     const apiKey = provider === "deepseek" ? deepseekApiKey : openaiApiKey;
     if (!apiKey || apiKey.length < 20) {
       return NextResponse.json(
         { error: `请先在“服务配置”中填写有效的 ${provider === "deepseek" ? "DeepSeek" : "OpenAI"} API Key。` },
         { status: 400 },
       );
+    }
+    if (provider === "deepseek" && !userDeepseekApiKey && hostedDeepseekApiKey) {
+      const allowance = await consumePublicAllowance(request, "rewrite");
+      if (!allowance.allowed) {
+        return NextResponse.json(
+          { error: allowance.message },
+          {
+            status: 429,
+            headers: { "Retry-After": String(allowance.retryAfterSeconds) },
+          },
+        );
+      }
     }
 
     const { systemPrompt, userPrompt } = buildPrompts(
