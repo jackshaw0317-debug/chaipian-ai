@@ -266,6 +266,40 @@ main {
   min-height: 58px;
 }
 
+.upload-input-wrap {
+  min-height: 142px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  border: 1px dashed #7e796f;
+  background: #fff;
+  padding: 18px;
+}
+
+.upload-input-wrap input {
+  width: 100%;
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.upload-input-wrap input::file-selector-button {
+  min-height: 36px;
+  margin-right: 12px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: white;
+  padding: 0 14px;
+  font-weight: 700;
+}
+
+.upload-input-wrap span {
+  color: #7b776e;
+  font-size: 10px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
 .url-input-wrap {
   position: relative;
 }
@@ -411,6 +445,16 @@ main {
   font-size: 12px;
 }
 
+.groq-trial-note {
+  border-color: #a89cdf;
+  background: #f0edff;
+  color: #514879;
+}
+
+.groq-trial-note > span {
+  color: #d7ccff;
+}
+
 .local-settings {
   margin-top: 14px;
   border-top: 1px solid var(--line);
@@ -497,6 +541,12 @@ main {
   color: #555d2d;
 }
 
+.local-settings .groq-whisper-note {
+  border-color: #b8ade8;
+  background: #f1effb;
+  color: #514879;
+}
+
 .local-settings .settings-field {
   margin: 0;
 }
@@ -553,7 +603,7 @@ main {
 .service-health {
   margin: 14px 0 2px 20px;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
 }
 
@@ -1706,6 +1756,16 @@ main {
   .input-panel {
     padding: 16px;
     box-shadow: 5px 5px 0 var(--ink);
+  }
+
+  .source-mode {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .source-mode button {
+    padding: 0 8px;
   }
 
   .url-row {

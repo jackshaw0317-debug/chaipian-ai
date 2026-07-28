@@ -9,7 +9,7 @@ export const runtime = "edge";
 const MAX_AUDIO_BYTES = 24 * 1024 * 1024;
 const MAX_TRANSCRIPT_CHARS = 120_000;
 type AnalysisProvider = "openai" | "deepseek";
-type TranscriptionProvider = "local" | "openai";
+type TranscriptionProvider = "local" | "openai" | "groq";
 
 type DownloaderResponse = {
   status?: "tunnel" | "redirect" | "local-processing" | "picker" | "error";
@@ -84,6 +84,9 @@ function friendlyError(message: string) {
     return "处理超时。请确认本机服务仍在运行，或换一个更短的视频后重试。";
   }
   if (lower.includes("api key") || lower.includes("unauthorized") || lower.includes("401")) {
+    if (lower.includes("groq")) {
+      return "Groq API Key 无效，请检查后重试。";
+    }
     if (lower.includes("deepseek")) {
       return "DeepSeek API Key 无效或额度不足，请检查“服务配置”中的 DeepSeek 密钥。";
     }
@@ -269,6 +272,51 @@ async function transcribeAudio(
   const payload = (await response.json()) as WhisperResponse;
   if (!response.ok || !payload.text) {
     throw new Error(payload.error?.message || `Transcription failed: ${response.status}`);
+  }
+
+  return {
+    text: payload.text,
+    segments: (payload.segments || [])
+      .filter((item) => item.text?.trim())
+      .map((item) => ({
+        start: Number(item.start || 0),
+        end: Number(item.end || item.start || 0),
+        text: item.text!.trim(),
+      })),
+  };
+}
+
+async function transcribeAudioWithGroq(
+  media: Awaited<ReturnType<typeof resolveMedia>>,
+  language: string,
+  apiKey: string,
+) {
+  const form = new FormData();
+  form.append("file", new File([media.data], media.filename, { type: media.contentType }));
+  form.append(
+    "model",
+    process.env.GROQ_TRANSCRIBE_MODEL || "whisper-large-v3-turbo",
+  );
+  form.append("response_format", "verbose_json");
+  form.append("timestamp_granularities[]", "segment");
+  if (language && language !== "auto") {
+    form.append("language", language);
+  }
+
+  const response = await fetchWithTimeout(
+    "https://api.groq.com/openai/v1/audio/transcriptions",
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+    },
+    180_000,
+  );
+  const payload = (await response.json()) as WhisperResponse;
+  if (!response.ok || !payload.text) {
+    throw new Error(
+      `Groq transcription failed: ${payload.error?.message || response.status}`,
+    );
   }
 
   return {
@@ -576,6 +624,7 @@ export async function POST(request: Request) {
       apiKey?: string;
       openaiApiKey?: string;
       deepseekApiKey?: string;
+      groqApiKey?: string;
       analysisProvider?: AnalysisProvider;
       transcriptionProvider?: TranscriptionProvider;
       cookieBrowser?: string;
@@ -583,7 +632,11 @@ export async function POST(request: Request) {
     const analysisProvider: AnalysisProvider =
       body.analysisProvider === "openai" ? "openai" : "deepseek";
     const transcriptionProvider: TranscriptionProvider =
-      body.transcriptionProvider === "openai" ? "openai" : "local";
+      body.transcriptionProvider === "openai"
+        ? "openai"
+        : body.transcriptionProvider === "groq"
+          ? "groq"
+          : "local";
     const openaiApiKey =
       body.openaiApiKey?.trim() || body.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
     const userDeepseekApiKey = body.deepseekApiKey?.trim();
@@ -591,7 +644,15 @@ export async function POST(request: Request) {
     const deepseekApiKey = userDeepseekApiKey || hostedDeepseekApiKey;
     const usingHostedDeepseek =
       analysisProvider === "deepseek" && !userDeepseekApiKey && Boolean(hostedDeepseekApiKey);
+    const userGroqApiKey = body.groqApiKey?.trim();
+    const hostedGroqApiKey = process.env.GROQ_API_KEY?.trim();
+    const groqApiKey = userGroqApiKey || hostedGroqApiKey;
     const providedTranscript = body.transcriptText?.trim().slice(0, MAX_TRANSCRIPT_CHARS) || "";
+    const usingHostedGroq =
+      !providedTranscript &&
+      transcriptionProvider === "groq" &&
+      !userGroqApiKey &&
+      Boolean(hostedGroqApiKey);
     const providedSegments = Array.isArray(body.transcriptSegments)
       ? body.transcriptSegments
           .slice(0, 4_000)
@@ -621,6 +682,22 @@ export async function POST(request: Request) {
     if (needsOpenAIKey && openaiApiKey!.length < 20) {
       return NextResponse.json({ error: "OpenAI API Key 格式不正确，请检查后重试。" }, { status: 400 });
     }
+    if (!providedTranscript && transcriptionProvider === "groq" && !groqApiKey) {
+      return NextResponse.json(
+        { error: "Groq 免费转写尚未启用，请填写有效的 Groq API Key。" },
+        { status: 503 },
+      );
+    }
+    if (
+      !providedTranscript &&
+      transcriptionProvider === "groq" &&
+      groqApiKey!.length < 20
+    ) {
+      return NextResponse.json(
+        { error: "Groq API Key 格式不正确，请检查后重试。" },
+        { status: 400 },
+      );
+    }
     if (analysisProvider === "deepseek" && !deepseekApiKey) {
       return NextResponse.json(
         { error: "已选择 DeepSeek 拆解，请在“服务配置”中填写 DeepSeek API Key。" },
@@ -632,6 +709,18 @@ export async function POST(request: Request) {
     }
     if (usingHostedDeepseek) {
       const allowance = await consumePublicAllowance(request, "analyze");
+      if (!allowance.allowed) {
+        return NextResponse.json(
+          { error: allowance.message },
+          {
+            status: 429,
+            headers: { "Retry-After": String(allowance.retryAfterSeconds) },
+          },
+        );
+      }
+    }
+    if (usingHostedGroq) {
+      const allowance = await consumePublicAllowance(request, "transcribe");
       if (!allowance.allowed) {
         return NextResponse.json(
           { error: allowance.message },
@@ -659,7 +748,9 @@ export async function POST(request: Request) {
       ? { text: providedTranscript, segments: providedSegments }
       : transcriptionProvider === "local"
         ? await transcribeAudioLocally(media!, body.language || "auto")
-        : await transcribeAudio(media!, body.language || "auto", openaiApiKey!);
+        : transcriptionProvider === "groq"
+          ? await transcribeAudioWithGroq(media!, body.language || "auto", groqApiKey!)
+          : await transcribeAudio(media!, body.language || "auto", openaiApiKey!);
     const analysis =
       analysisProvider === "deepseek"
         ? await analyzeTranscriptWithDeepSeek(
@@ -687,7 +778,9 @@ export async function POST(request: Request) {
             ? "provided-transcript"
             : transcriptionProvider === "local"
             ? process.env.LOCAL_WHISPER_MODEL || "base"
-            : process.env.TRANSCRIBE_MODEL || "whisper-1",
+            : transcriptionProvider === "groq"
+              ? process.env.GROQ_TRANSCRIBE_MODEL || "whisper-large-v3-turbo"
+              : process.env.TRANSCRIBE_MODEL || "whisper-1",
         analysisProvider,
         analysisModel:
           analysisProvider === "deepseek"

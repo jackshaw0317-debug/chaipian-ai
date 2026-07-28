@@ -9,9 +9,14 @@ export async function GET() {
   return NextResponse.json(
     {
       deepseek: {
-        publicTrial: trial.enabled,
+        publicTrial: trial.deepseekEnabled,
         dailyAnalyzeLimit: trial.dailyAnalyzeLimit,
         dailyRewriteLimit: trial.dailyRewriteLimit,
+      },
+      groq: {
+        publicTrial: trial.groqEnabled,
+        dailyTranscribeLimit: trial.dailyTranscribeLimit,
+        maxFileBytes: 25 * 1024 * 1024,
       },
     },
     {

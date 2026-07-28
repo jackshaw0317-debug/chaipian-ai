@@ -59,6 +59,11 @@ type SiteCapabilities = {
     dailyAnalyzeLimit: number;
     dailyRewriteLimit: number;
   };
+  groq: {
+    publicTrial: boolean;
+    dailyTranscribeLimit: number;
+    maxFileBytes: number;
+  };
 };
 
 type LocalMedia = {
@@ -305,13 +310,15 @@ async function writeClipboard(text: string) {
 }
 
 export default function Home() {
-  const [sourceMode, setSourceMode] = useState<"url" | "transcript">("url");
+  const [sourceMode, setSourceMode] = useState<"url" | "upload" | "transcript">("url");
   const [url, setUrl] = useState("");
   const [transcriptInput, setTranscriptInput] = useState("");
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [deepseekApiKey, setDeepseekApiKey] = useState("");
+  const [groqApiKey, setGroqApiKey] = useState("");
   const [analysisProvider, setAnalysisProvider] = useState<"deepseek" | "openai">("deepseek");
-  const [transcriptionProvider, setTranscriptionProvider] = useState<"local" | "openai">("local");
+  const [transcriptionProvider, setTranscriptionProvider] = useState<"local" | "openai" | "groq">("local");
   const [cookieBrowser, setCookieBrowser] = useState<
     "fresh-edge" | "none" | "edge" | "chrome"
   >("fresh-edge");
@@ -347,21 +354,36 @@ export default function Home() {
   const transcriptionService =
     sourceMode === "transcript"
       ? "直接使用字幕"
-      : transcriptionProvider === "local"
-        ? "本机 Whisper"
-        : "OpenAI Whisper";
+      : sourceMode === "upload"
+        ? "Groq Whisper"
+        : transcriptionProvider === "local"
+          ? "本机 Whisper"
+          : transcriptionProvider === "groq"
+            ? "Groq Whisper"
+            : "OpenAI Whisper";
   const needsOpenAIKey =
     analysisProvider === "openai" ||
     (sourceMode === "url" && transcriptionProvider === "openai");
   const publicDeepseekTrial = capabilities?.deepseek.publicTrial === true;
+  const publicGroqTrial = capabilities?.groq.publicTrial === true;
+  const usesGroq =
+    sourceMode === "upload" ||
+    (sourceMode === "url" && transcriptionProvider === "groq");
   const stages = [
     sourceMode === "transcript"
       ? { key: "download" as const, label: "读取字幕", detail: "使用你粘贴的字幕全文" }
-      : baseStages[0],
+      : sourceMode === "upload"
+        ? { key: "download" as const, label: "读取文件", detail: "检查音视频格式与大小" }
+        : baseStages[0],
     {
       key: "transcribe" as const,
       label: sourceMode === "transcript" ? "跳过语音转写" : `${transcriptionService} 转写`,
-      detail: sourceMode === "transcript" ? "无需调用 Whisper" : "识别语音并生成时间轴",
+      detail:
+        sourceMode === "transcript"
+          ? "无需调用 Whisper"
+          : sourceMode === "upload"
+            ? "上传至 Groq 并生成时间轴"
+            : "识别语音并生成时间轴",
     },
     {
       key: "analyze" as const,
@@ -380,7 +402,7 @@ export default function Home() {
       ? "本机服务已就绪"
       : pageRuntime === "hosted" && !localAccessRequested
         ? "本机助手待连接"
-      : sourceMode === "transcript"
+      : sourceMode === "transcript" || (sourceMode === "upload" && publicGroqTrial)
         ? "在线字幕模式可用"
         : `本机服务 ${healthyServiceCount}/2`;
 
@@ -469,7 +491,12 @@ export default function Home() {
         const response = await fetch("/api/capabilities", { cache: "no-store" });
         if (!response.ok) return;
         const payload = (await response.json()) as SiteCapabilities;
-        if (active) setCapabilities(payload);
+        if (active) {
+          setCapabilities(payload);
+          if (!localPage && payload.groq?.publicTrial) {
+            setTranscriptionProvider("groq");
+          }
+        }
       } catch {
         if (active) setCapabilities(null);
       }
@@ -502,7 +529,7 @@ export default function Home() {
     return nextHealth;
   }
 
-  function focusSetting(id: "deepseek-key" | "openai-key") {
+  function focusSetting(id: "deepseek-key" | "openai-key" | "groq-key") {
     setSettingsOpen(true);
     window.requestAnimationFrame(() => {
       document.getElementById(id)?.focus();
@@ -523,6 +550,15 @@ export default function Home() {
         setError("请输入完整的 http 或 https 视频链接。");
         return;
       }
+    } else if (sourceMode === "upload") {
+      if (!uploadFile) {
+        setError("请选择一个需要转写的音频或视频文件。");
+        return;
+      }
+      if (uploadFile.size > 25 * 1024 * 1024) {
+        setError("文件超过 25 MB，请压缩、截取或改用更短的内容。");
+        return;
+      }
     } else if (transcriptInput.trim().length < 20) {
       setError("请至少粘贴 20 个字的字幕内容。");
       return;
@@ -541,6 +577,11 @@ export default function Home() {
     if (needsOpenAIKey && openaiApiKey.trim().length < 20) {
       setError("当前选择需要 OpenAI API Key，请先在“服务配置”中填写。");
       focusSetting("openai-key");
+      return;
+    }
+    if (usesGroq && !publicGroqTrial && groqApiKey.trim().length < 20) {
+      setError("Groq 免费转写尚未启用，请先在“服务配置”中填写 Groq API Key。");
+      focusSetting("groq-key");
       return;
     }
 
@@ -595,6 +636,29 @@ export default function Home() {
           controller.signal,
         );
         setStage("analyze");
+      } else if (sourceMode === "upload" && uploadFile) {
+        setStage("transcribe");
+        const uploadForm = new FormData();
+        uploadForm.append("file", uploadFile, uploadFile.name);
+        uploadForm.append("language", language);
+        if (groqApiKey.trim()) uploadForm.append("groqApiKey", groqApiKey.trim());
+        const uploadResponse = await fetch("/api/transcribe", {
+          method: "POST",
+          signal: controller.signal,
+          body: uploadForm,
+        });
+        const uploadPayload = (await uploadResponse.json().catch(() => null)) as
+          | (LocalTranscription & { filename?: string; error?: string })
+          | null;
+        if (!uploadResponse.ok || !uploadPayload?.text) {
+          throw new Error(uploadPayload?.error || "云端转写失败，请稍后重试。");
+        }
+        localFilename = uploadPayload.filename || uploadFile.name;
+        localTranscription = {
+          text: uploadPayload.text,
+          segments: uploadPayload.segments || [],
+        };
+        setStage("analyze");
       }
 
       const response = await fetch("/api/analyze", {
@@ -611,10 +675,11 @@ export default function Home() {
           language,
           focus,
           analysisProvider,
-          transcriptionProvider,
+          transcriptionProvider: sourceMode === "upload" ? "groq" : transcriptionProvider,
           cookieBrowser: cookieBrowser === "none" ? undefined : cookieBrowser,
           openaiApiKey: openaiApiKey.trim() || undefined,
           deepseekApiKey: deepseekApiKey.trim() || undefined,
+          groqApiKey: groqApiKey.trim() || undefined,
         }),
       });
       const rawPayload = await response.text();
@@ -843,7 +908,7 @@ export default function Home() {
             <span>拆到能复用。</span>
           </h1>
           <p className="hero-lead">
-            粘贴视频链接或现成字幕，从开场、结构、金句和转化动作四个维度获得可执行的内容报告。
+            粘贴视频链接、上传音视频或使用现成字幕，从开场、结构、金句和转化动作四个维度获得可执行的内容报告。
           </p>
 
           <form className="input-panel" onSubmit={runAnalysis}>
@@ -860,6 +925,18 @@ export default function Home() {
               <button
                 type="button"
                 role="tab"
+                aria-selected={sourceMode === "upload"}
+                onClick={() => {
+                  setSourceMode("upload");
+                  setTranscriptionProvider("groq");
+                }}
+                disabled={isWorking}
+              >
+                上传音视频
+              </button>
+              <button
+                type="button"
+                role="tab"
                 aria-selected={sourceMode === "transcript"}
                 onClick={() => setSourceMode("transcript")}
                 disabled={isWorking}
@@ -867,10 +944,22 @@ export default function Home() {
                 粘贴字幕
               </button>
             </div>
-            <label htmlFor={sourceMode === "url" ? "video-url" : "transcript-input"}>
-              {sourceMode === "url" ? "视频链接" : "字幕全文"}
+            <label
+              htmlFor={
+                sourceMode === "url"
+                  ? "video-url"
+                  : sourceMode === "upload"
+                    ? "media-upload"
+                    : "transcript-input"
+              }
+            >
+              {sourceMode === "url"
+                ? "视频链接"
+                : sourceMode === "upload"
+                  ? "音频或视频文件"
+                  : "字幕全文"}
             </label>
-            <div className={`url-row ${sourceMode === "transcript" ? "transcript-mode" : ""}`}>
+            <div className={`url-row ${sourceMode !== "url" ? "transcript-mode" : ""}`}>
               {sourceMode === "url" ? (
                 <div className="url-input-wrap">
                   <span className="link-symbol" aria-hidden="true">↗</span>
@@ -884,6 +973,22 @@ export default function Home() {
                     disabled={isWorking}
                     aria-describedby="url-help"
                   />
+                </div>
+              ) : sourceMode === "upload" ? (
+                <div className="upload-input-wrap">
+                  <input
+                    id="media-upload"
+                    type="file"
+                    accept="audio/*,video/mp4,video/webm,video/mpeg,.m4a,.mp3,.wav,.ogg,.flac"
+                    onChange={(event) => setUploadFile(event.target.files?.[0] || null)}
+                    disabled={isWorking}
+                    aria-describedby="url-help"
+                  />
+                  <span>
+                    {uploadFile
+                      ? `${uploadFile.name} · ${(uploadFile.size / 1024 / 1024).toFixed(1)} MB`
+                      : "支持 MP3、M4A、WAV、MP4、WebM，最大 25 MB"}
+                  </span>
                 </div>
               ) : (
                 <textarea
@@ -904,7 +1009,7 @@ export default function Home() {
             <div className="options-row">
               <label>
                 <span>字幕语言</span>
-                {sourceMode === "url" ? (
+                {sourceMode !== "transcript" ? (
                   <select value={language} onChange={(event) => setLanguage(event.target.value)} disabled={isWorking}>
                     <option value="auto">自动识别</option>
                     <option value="zh">中文</option>
@@ -941,6 +1046,16 @@ export default function Home() {
                 </p>
               </div>
             )}
+            {usesGroq && publicGroqTrial && (
+              <div className="public-trial-note groq-trial-note" role="status">
+                <span>GROQ</span>
+                <p>
+                  <strong>本站已提供 Groq Whisper 免费转写</strong>
+                  无需安装本机助手；每位访客每天可在线转写{" "}
+                  {capabilities.groq.dailyTranscribeLimit} 次，单个文件不超过 25 MB。
+                </p>
+              </div>
+            )}
             <details
               className="local-settings"
               open={settingsOpen}
@@ -958,8 +1073,13 @@ export default function Home() {
                   <strong>本机 Whisper</strong>
                   <small>{health?.services.whisper ? "已加载" : "未连接"}</small>
                 </div>
+                <div className={publicGroqTrial ? "ready" : "offline"}>
+                  <span />
+                  <strong>Groq Whisper</strong>
+                  <small>{publicGroqTrial ? "云端可用" : "待配置"}</small>
+                </div>
               </div>
-              {transcriptionProvider === "local" && (
+              {sourceMode === "url" && transcriptionProvider === "local" && (
                 <div className="local-service-actions">
                   <button
                     type="button"
@@ -986,11 +1106,12 @@ export default function Home() {
                     id="transcription-provider"
                     value={transcriptionProvider}
                     onChange={(event) =>
-                      setTranscriptionProvider(event.target.value as "local" | "openai")
+                      setTranscriptionProvider(event.target.value as "local" | "openai" | "groq")
                     }
                     disabled={isWorking}
                   >
-                    <option value="local">本机 Whisper（推荐）</option>
+                    <option value="groq">Groq Whisper（线上推荐）</option>
+                    <option value="local">本机 Whisper</option>
                     <option value="openai">OpenAI Whisper API</option>
                   </select>
                 </label>
@@ -1013,33 +1134,65 @@ export default function Home() {
                   <span>{analysisProvider === "deepseek" ? "deepseek-v4-flash · 快速模式" : "GPT 拆解模型"}</span>
                 </div>
               </div>
-              <label className="cookie-browser-field" htmlFor="cookie-browser">
-                <span>平台下载凭证</span>
-                <select
-                  id="cookie-browser"
-                  value={cookieBrowser}
-                  onChange={(event) =>
-                    setCookieBrowser(
-                      event.target.value as "fresh-edge" | "none" | "edge" | "chrome",
-                    )
-                  }
-                  disabled={isWorking}
-                >
-                  <option value="fresh-edge">自动使用临时 Edge（推荐）</option>
-                  <option value="none">不使用 Cookie</option>
-                  <option value="edge">读取现有 Edge Cookie</option>
-                  <option value="chrome">读取现有 Chrome Cookie</option>
-                </select>
-              </label>
-              <p>
-                推荐选项会用隔离的临时 Edge 加载视频并读取当前播放流，不读取账号、历史记录或现有浏览器 Cookie；任务完成后立即删除临时数据。
-              </p>
-              {transcriptionProvider === "local" && (
+              {sourceMode === "url" && transcriptionProvider === "local" && (
+                <>
+                  <label className="cookie-browser-field" htmlFor="cookie-browser">
+                    <span>平台下载凭证</span>
+                    <select
+                      id="cookie-browser"
+                      value={cookieBrowser}
+                      onChange={(event) =>
+                        setCookieBrowser(
+                          event.target.value as "fresh-edge" | "none" | "edge" | "chrome",
+                        )
+                      }
+                      disabled={isWorking}
+                    >
+                      <option value="fresh-edge">自动使用临时 Edge（推荐）</option>
+                      <option value="none">不使用 Cookie</option>
+                      <option value="edge">读取现有 Edge Cookie</option>
+                      <option value="chrome">读取现有 Chrome Cookie</option>
+                    </select>
+                  </label>
+                  <p>
+                    推荐选项会用隔离的临时 Edge 加载视频并读取当前播放流，不读取账号、历史记录或现有浏览器 Cookie；任务完成后立即删除临时数据。
+                  </p>
+                </>
+              )}
+              {sourceMode === "url" && transcriptionProvider === "local" && (
                 <p className="local-whisper-note">
                   {pageRuntime === "hosted"
                     ? "线上网页只把视频交给你电脑上的本机助手，字幕仍在这台电脑上处理，无需 OpenAI Key。"
                     : "字幕在这台电脑上处理，无需 OpenAI Key。首次使用会下载 Whisper base 模型，之后可离线转写。"}
                 </p>
+              )}
+              {usesGroq && (
+                <>
+                  <p className="local-whisper-note groq-whisper-note">
+                    Groq 在云端完成转写，网友无需安装本机助手。上传文件和可直接访问的音视频直链可用；抖音、小红书等平台分享链接仍需要云端下载器。
+                  </p>
+                  <label htmlFor="groq-key">
+                    {publicGroqTrial ? "自己的 Groq API Key（可选）" : "Groq API Key"}
+                  </label>
+                  <input
+                    id="groq-key"
+                    type="password"
+                    autoComplete="off"
+                    placeholder={
+                      publicGroqTrial
+                        ? "留空即可使用本站免费转写额度"
+                        : "填写 Groq 控制台生成的密钥"
+                    }
+                    value={groqApiKey}
+                    onChange={(event) => setGroqApiKey(event.target.value)}
+                    disabled={isWorking}
+                  />
+                  <p>
+                    {publicGroqTrial
+                      ? "达到本站免费次数后，可临时填写自己的密钥继续使用。"
+                      : "仅用于 Groq Whisper 转写，不参与内容拆解。"}
+                  </p>
+                </>
               )}
               {needsOpenAIKey && (
                 <>
@@ -1082,8 +1235,9 @@ export default function Home() {
                 </>
               )}
               <p className="settings-privacy">
-                {publicDeepseekTrial && analysisProvider === "deepseek"
-                  ? "本站 DeepSeek 密钥只保存在服务器；访客无法查看。你自行填写的密钥只停留在当前页面内存。"
+                {(publicDeepseekTrial && analysisProvider === "deepseek") ||
+                (publicGroqTrial && usesGroq)
+                  ? "本站提供的 API 密钥只保存在服务器，访客无法查看；自行填写的密钥只停留在当前页面内存。"
                   : `${needsOpenAIKey && analysisProvider === "deepseek" ? "两枚密钥" : "密钥"}只保存在当前页面内存中，不写入项目或浏览器存储。`}
               </p>
             </details>
@@ -1091,8 +1245,12 @@ export default function Home() {
               {sourceMode === "url"
                 ? pageRuntime === "hosted" && transcriptionProvider === "local"
                   ? "线上页面需要先连接本机助手。使用前请确认你拥有下载与处理该内容的权利。"
-                  : "使用前请确认你拥有下载与处理该内容的权利。单个音频建议不超过 24 MB。"
-                : publicDeepseekTrial
+                  : transcriptionProvider === "groq"
+                    ? "音视频直链可由 Groq 在线转写；平台分享链接如无法读取，请改用“上传音视频”或“粘贴字幕”。"
+                    : "使用前请确认你拥有下载与处理该内容的权利。单个音频建议不超过 24 MB。"
+                : sourceMode === "upload"
+                  ? "文件会发送到 Groq 进行临时转写，不在本站保存；请确认你拥有处理该内容的权利。"
+                  : publicDeepseekTrial
                   ? "线上版本可直接拆解已有字幕，不需要调用本机 Whisper，也不需要访客填写 DeepSeek 密钥。"
                   : "线上版本可直接拆解已有字幕，不需要调用本机 Whisper。字幕和密钥均不写入浏览器存储。"}
             </p>
@@ -1415,7 +1573,13 @@ export default function Home() {
       <footer className="site-footer">
         <div className="brand footer-brand"><span className="brand-mark">拆</span><span>拆片</span><em>AI</em></div>
         <p>让好内容，不止被看见一次。</p>
-        <span>{publicDeepseekTrial ? "PUBLIC TRIAL × DEEPSEEK" : "LOCAL WHISPER × DEEPSEEK"}</span>
+        <span>
+          {publicGroqTrial
+            ? "GROQ WHISPER × DEEPSEEK"
+            : publicDeepseekTrial
+              ? "PUBLIC TRIAL × DEEPSEEK"
+              : "LOCAL WHISPER × DEEPSEEK"}
+        </span>
       </footer>
     </main>
   );

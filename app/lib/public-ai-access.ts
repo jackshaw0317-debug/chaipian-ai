@@ -1,4 +1,4 @@
-type PublicAction = "analyze" | "rewrite";
+type PublicAction = "analyze" | "rewrite" | "transcribe";
 
 type UsageDatabase = {
   prepare(query: string): {
@@ -31,9 +31,11 @@ function positiveInteger(value: string | undefined, fallback: number) {
 
 export function getPublicTrialConfig() {
   return {
-    enabled: Boolean(process.env.DEEPSEEK_API_KEY?.trim()),
+    deepseekEnabled: Boolean(process.env.DEEPSEEK_API_KEY?.trim()),
+    groqEnabled: Boolean(process.env.GROQ_API_KEY?.trim()),
     dailyAnalyzeLimit: positiveInteger(process.env.PUBLIC_ANALYZE_DAILY_LIMIT, 3),
     dailyRewriteLimit: positiveInteger(process.env.PUBLIC_REWRITE_DAILY_LIMIT, 3),
+    dailyTranscribeLimit: positiveInteger(process.env.PUBLIC_TRANSCRIBE_DAILY_LIMIT, 3),
   };
 }
 
@@ -134,7 +136,9 @@ export async function consumePublicAllowance(
   action: PublicAction,
 ): Promise<PublicAllowance> {
   const config = getPublicTrialConfig();
-  if (!config.enabled) {
+  const providerEnabled =
+    action === "transcribe" ? config.groqEnabled : config.deepseekEnabled;
+  if (!providerEnabled) {
     return {
       allowed: false,
       message: "站点体验额度尚未启用，请稍后再试。",
@@ -148,11 +152,16 @@ export async function consumePublicAllowance(
   const now = new Date();
   const addressHash = await hashAddress(request);
   const actionDailyLimit =
-    action === "analyze" ? config.dailyAnalyzeLimit : config.dailyRewriteLimit;
+    action === "analyze"
+      ? config.dailyAnalyzeLimit
+      : action === "rewrite"
+        ? config.dailyRewriteLimit
+        : config.dailyTranscribeLimit;
   const globalDailyLimit = positiveInteger(process.env.PUBLIC_AI_GLOBAL_DAILY_LIMIT, 200);
   const burstLimit = positiveInteger(process.env.PUBLIC_AI_BURST_LIMIT, 2);
   const burstSeconds = positiveInteger(process.env.PUBLIC_AI_BURST_WINDOW_SECONDS, 600);
-  const actionLabel = action === "analyze" ? "拆解" : "仿写";
+  const actionLabel =
+    action === "analyze" ? "拆解" : action === "rewrite" ? "仿写" : "转写";
   const rules: UsageRule[] = [
     {
       scope: `burst:${addressHash}:${action}`,
