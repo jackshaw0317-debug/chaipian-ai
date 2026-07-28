@@ -42,12 +42,25 @@ test("服务端渲染拆片 AI 产品页", async () => {
 });
 
 test("项目不再包含启动占位页，并保留本地隐私约束", async () => {
-  const [page, layout, packageJson, healthRoute, rewriteRoute, startScript] = await Promise.all([
+  const [
+    page,
+    layout,
+    packageJson,
+    healthRoute,
+    analyzeRoute,
+    rewriteRoute,
+    downloader,
+    transcriber,
+    startScript,
+  ] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../app/api/health/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/analyze/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/rewrite/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/local-downloader.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../scripts/local-transcriber.py", import.meta.url), "utf8"),
     readFile(new URL("../scripts/start-local.ps1", import.meta.url), "utf8"),
   ]);
 
@@ -59,11 +72,19 @@ test("项目不再包含启动占位页，并保留本地隐私约束", async ()
   assert.match(page, /把拆解结果，变成你的项目文案/);
   assert.match(page, /短视频口播/);
   assert.match(page, /transcriptText/);
+  assert.match(page, /targetAddressSpace: "loopback"/);
+  assert.match(page, /连接本机助手/);
+  assert.match(page, /transcribeMediaLocally/);
   assert.match(layout, /拆片 AI｜视频转字幕与内容拆解/);
   assert.match(healthRoute, /127\.0\.0\.1:4317\/health/);
   assert.match(healthRoute, /127\.0\.0\.1:4318\/health/);
+  assert.match(analyzeRoute, /transcriptSegments/);
   assert.match(rewriteRoute, /唯一事实来源/);
   assert.match(rewriteRoute, /不得虚构/);
+  assert.match(downloader, /https:\/\/jackshaw\.top/);
+  assert.match(downloader, /Access-Control-Allow-Private-Network/);
+  assert.match(transcriber, /https:\/\/jackshaw\.top/);
+  assert.match(transcriber, /Access-Control-Allow-Private-Network/);
   assert.match(startScript, /npm\.cmd run build/);
   assert.match(startScript, /npm\.cmd run start/);
   assert.doesNotMatch(startScript, /npm\.cmd run dev/);

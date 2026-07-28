@@ -26,6 +26,13 @@ MODEL_NAME = os.environ.get("LOCAL_WHISPER_MODEL", "base")
 DEVICE = os.environ.get("LOCAL_WHISPER_DEVICE", "cpu")
 COMPUTE_TYPE = os.environ.get("LOCAL_WHISPER_COMPUTE_TYPE", "int8")
 NODE_EXECUTABLE = os.environ.get("NODE_EXECUTABLE", "node")
+ALLOWED_ORIGINS = {
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://jackshaw.top",
+    "https://www.jackshaw.top",
+    "https://chaipian-ai-studio.jackshaw0317.chatgpt.site",
+}
 
 sys.path.insert(0, str(PACKAGE_ROOT))
 
@@ -107,16 +114,49 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format_string: str, *args: object) -> None:
         print(f"[Whisper] {format_string % args}", flush=True)
 
+    def browser_origin(self) -> str:
+        return self.headers.get("Origin", "").strip()
+
+    def browser_origin_allowed(self) -> bool:
+        origin = self.browser_origin()
+        return not origin or origin in ALLOWED_ORIGINS
+
+    def send_browser_access_headers(self) -> None:
+        origin = self.browser_origin()
+        if origin in ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, X-Chaipian-Client, X-Media-Filename, X-Whisper-Language",
+        )
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header(
+            "Vary", "Origin, Access-Control-Request-Private-Network"
+        )
+
     def send_json(self, status: int, payload: dict[str, object]) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_browser_access_headers()
         self.end_headers()
         self.wfile.write(data)
 
+    def do_OPTIONS(self) -> None:
+        if not self.browser_origin_allowed():
+            self.send_json(403, {"error": "当前网页没有访问本机助手的权限。"})
+            return
+        self.send_response(204)
+        self.send_browser_access_headers()
+        self.end_headers()
+
     def do_GET(self) -> None:
+        if not self.browser_origin_allowed():
+            self.send_json(403, {"error": "当前网页没有访问本机助手的权限。"})
+            return
         if self.path != "/health":
             self.send_json(404, {"error": "接口不存在"})
             return
@@ -132,6 +172,9 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:
+        if not self.browser_origin_allowed():
+            self.send_json(403, {"error": "当前网页没有访问本机助手的权限。"})
+            return
         if self.path != "/transcribe":
             self.send_json(404, {"error": "接口不存在"})
             return

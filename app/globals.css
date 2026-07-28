@@ -558,6 +558,40 @@ main {
   font-size: 9px;
 }
 
+.local-service-actions {
+  margin: 8px 0 2px 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.local-service-actions button {
+  min-height: 34px;
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  color: white;
+  padding: 0 13px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.local-service-actions button:hover:not(:disabled) {
+  background: var(--rust);
+}
+
+.local-service-actions button:disabled {
+  cursor: wait;
+  opacity: .55;
+}
+
+.local-service-actions span {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
 .inline-progress {
   margin-top: 16px;
   display: grid;
@@ -1658,6 +1692,11 @@ main {
 
   .service-health {
     grid-template-columns: 1fr;
+  }
+
+  .local-service-actions {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .demo-button {

@@ -16,6 +16,13 @@ const edgeExecutable =
   process.env.EDGE_EXECUTABLE ||
   "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 const maxBytes = 24 * 1024 * 1024;
+const allowedOrigins = new Set([
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "https://jackshaw.top",
+  "https://www.jackshaw.top",
+  "https://chaipian-ai-studio.jackshaw0317.chatgpt.site",
+]);
 
 const contentTypes = {
   ".m4a": "audio/mp4",
@@ -33,6 +40,32 @@ function writeJson(response, status, payload) {
     "Cache-Control": "no-store",
   });
   response.end(JSON.stringify(payload));
+}
+
+function applyBrowserAccessHeaders(request, response) {
+  const origin = String(request.headers.origin || "");
+  if (allowedOrigins.has(origin)) {
+    response.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  response.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, X-Chaipian-Client",
+  );
+  response.setHeader(
+    "Access-Control-Expose-Headers",
+    "Content-Type, Content-Length, X-Media-Filename",
+  );
+  response.setHeader("Access-Control-Allow-Private-Network", "true");
+  response.setHeader(
+    "Vary",
+    "Origin, Access-Control-Request-Private-Network",
+  );
+}
+
+function isAllowedBrowserOrigin(request) {
+  const origin = String(request.headers.origin || "");
+  return !origin || allowedOrigins.has(origin);
 }
 
 function blockedHostname(hostname) {
@@ -435,8 +468,19 @@ async function locateDownloadedFile(outputDirectory, printedPath) {
 }
 
 const server = createServer(async (request, response) => {
-  response.setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
+  applyBrowserAccessHeaders(request, response);
   response.setHeader("Cache-Control", "no-store");
+
+  if (!isAllowedBrowserOrigin(request)) {
+    writeJson(response, 403, { error: "当前网页没有访问本机助手的权限。" });
+    return;
+  }
+
+  if (request.method === "OPTIONS") {
+    response.writeHead(204);
+    response.end();
+    return;
+  }
 
   if (request.method === "GET" && request.url === "/health") {
     writeJson(response, 200, { ok: true, service: "chaipian-local-downloader" });

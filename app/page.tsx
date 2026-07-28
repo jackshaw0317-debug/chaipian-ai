@@ -53,6 +53,127 @@ type LocalHealth = {
   checkedAt: string;
 };
 
+type LocalMedia = {
+  data: ArrayBuffer;
+  contentType: string;
+  filename: string;
+};
+
+type LocalTranscription = {
+  text: string;
+  segments: TranscriptSegment[];
+};
+
+type LoopbackRequestInit = RequestInit & {
+  targetAddressSpace?: "loopback";
+};
+
+const LOCAL_DOWNLOADER_URL = "http://127.0.0.1:4317";
+const LOCAL_TRANSCRIBER_URL = "http://127.0.0.1:4318";
+
+function fetchLoopback(input: string, init: RequestInit = {}) {
+  return fetch(input, {
+    ...init,
+    mode: "cors",
+    cache: "no-store",
+    targetAddressSpace: "loopback",
+    headers: {
+      "X-Chaipian-Client": "web",
+      ...init.headers,
+    },
+  } as LoopbackRequestInit);
+}
+
+async function checkLocalServices(): Promise<LocalHealth> {
+  async function check(url: string) {
+    try {
+      const response = await fetchLoopback(url);
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  const [downloader, whisper] = await Promise.all([
+    check(`${LOCAL_DOWNLOADER_URL}/health`),
+    check(`${LOCAL_TRANSCRIBER_URL}/health`),
+  ]);
+  return {
+    ok: downloader && whisper,
+    services: { downloader, whisper },
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+async function downloadVideoLocally(
+  sourceUrl: string,
+  cookieBrowser: string,
+  signal: AbortSignal,
+): Promise<LocalMedia> {
+  const response = await fetchLoopback(`${LOCAL_DOWNLOADER_URL}/download`, {
+    method: "POST",
+    signal,
+    headers: {
+      Accept: "application/octet-stream",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      url: sourceUrl,
+      cookieBrowser: cookieBrowser === "none" ? undefined : cookieBrowser,
+    }),
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(payload?.error || `本机视频下载失败（${response.status}）`);
+  }
+  const data = await response.arrayBuffer();
+  if (!data.byteLength) throw new Error("本机下载服务没有返回音频内容。");
+  return {
+    data,
+    contentType: (response.headers.get("content-type") || "audio/webm").split(";")[0],
+    filename: decodeURIComponent(
+      response.headers.get("x-media-filename") || "downloaded-audio.webm",
+    ),
+  };
+}
+
+async function transcribeMediaLocally(
+  media: LocalMedia,
+  language: string,
+  signal: AbortSignal,
+): Promise<LocalTranscription> {
+  const response = await fetchLoopback(`${LOCAL_TRANSCRIBER_URL}/transcribe`, {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": media.contentType,
+      "X-Media-Filename": encodeURIComponent(media.filename),
+      "X-Whisper-Language": language || "auto",
+    },
+    body: media.data,
+  });
+  const payload = (await response.json().catch(() => null)) as
+    | {
+        text?: string;
+        segments?: Array<{ start?: number; end?: number; text?: string }>;
+        error?: string;
+      }
+    | null;
+  if (!response.ok || !payload?.text) {
+    throw new Error(payload?.error || `本机 Whisper 转写失败（${response.status}）`);
+  }
+  return {
+    text: payload.text,
+    segments: (payload.segments || [])
+      .filter((item) => item.text?.trim())
+      .map((item) => ({
+        start: Number(item.start || 0),
+        end: Number(item.end || item.start || 0),
+        text: item.text!.trim(),
+      })),
+  };
+}
+
 type RewriteFormat = "short-video" | "xiaohongshu" | "private-domain" | "advertising";
 
 type RewriteResult = {
@@ -198,6 +319,8 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [health, setHealth] = useState<LocalHealth | null>(null);
   const [healthChecking, setHealthChecking] = useState(true);
+  const [pageRuntime, setPageRuntime] = useState<"unknown" | "local" | "hosted">("unknown");
+  const [localAccessRequested, setLocalAccessRequested] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [projectInfo, setProjectInfo] = useState("");
   const [rewriteDirection, setRewriteDirection] = useState("");
@@ -245,6 +368,8 @@ export default function Home() {
     ? "正在检查本机服务"
     : health?.ok
       ? "本机服务已就绪"
+      : pageRuntime === "hosted" && !localAccessRequested
+        ? "本机助手待连接"
       : sourceMode === "transcript"
         ? "在线字幕模式可用"
         : `本机服务 ${healthyServiceCount}/2`;
@@ -300,8 +425,21 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
+    const localPage = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+    setPageRuntime(localPage ? "local" : "hosted");
 
     async function refreshHealth() {
+      if (!localPage) {
+        if (active) {
+          setHealth({
+            ok: false,
+            services: { downloader: false, whisper: false },
+            checkedAt: new Date().toISOString(),
+          });
+          setHealthChecking(false);
+        }
+        return;
+      }
       setHealthChecking(true);
       try {
         const response = await fetch("/api/health", { cache: "no-store" });
@@ -322,6 +460,23 @@ export default function Home() {
       abortRef.current?.abort();
     };
   }, []);
+
+  async function connectLocalServices(showError = false) {
+    setLocalAccessRequested(true);
+    setHealthChecking(true);
+    const nextHealth = await checkLocalServices();
+    setHealth(nextHealth);
+    setHealthChecking(false);
+    if (showError && !nextHealth.ok) {
+      setError(
+        "没有连接到本机助手。请双击“启动拆片AI”，并在浏览器询问本地网络访问时选择“允许”，然后重试。",
+      );
+      setSettingsOpen(true);
+    } else if (nextHealth.ok && error.includes("本机")) {
+      setError("");
+    }
+    return nextHealth;
+  }
 
   function focusSetting(id: "deepseek-key" | "openai-key") {
     setSettingsOpen(true);
@@ -361,15 +516,11 @@ export default function Home() {
       return;
     }
 
-    if (
-      sourceMode === "url" &&
-      transcriptionProvider === "local" &&
-      health &&
-      !health.services.whisper
-    ) {
-      setError("本机 Whisper 尚未运行，请双击“启动拆片AI”后再试。");
-      setSettingsOpen(true);
-      return;
+    const useLocalPipeline =
+      sourceMode === "url" && transcriptionProvider === "local";
+    if (useLocalPipeline) {
+      const nextHealth = await connectLocalServices(true);
+      if (!nextHealth.ok) return;
     }
 
     setError("");
@@ -390,15 +541,34 @@ export default function Home() {
     }, 1_000);
 
     const progressTimer =
-      sourceMode === "url"
+      sourceMode === "url" && !useLocalPipeline
         ? window.setTimeout(() => setStage("transcribe"), 18_000)
         : undefined;
     const analyzeTimer =
-      sourceMode === "url"
+      sourceMode === "url" && !useLocalPipeline
         ? window.setTimeout(() => setStage("analyze"), 55_000)
         : undefined;
 
     try {
+      let localFilename = "";
+      let localTranscription: LocalTranscription | null = null;
+      if (useLocalPipeline) {
+        setStage("download");
+        const media = await downloadVideoLocally(
+          url.trim(),
+          cookieBrowser,
+          controller.signal,
+        );
+        localFilename = media.filename;
+        setStage("transcribe");
+        localTranscription = await transcribeMediaLocally(
+          media,
+          language,
+          controller.signal,
+        );
+        setStage("analyze");
+      }
+
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -406,7 +576,10 @@ export default function Home() {
         body: JSON.stringify({
           url: url.trim(),
           transcriptText:
-            sourceMode === "transcript" ? transcriptInput.trim() : undefined,
+            sourceMode === "transcript"
+              ? transcriptInput.trim()
+              : localTranscription?.text,
+          transcriptSegments: localTranscription?.segments,
           language,
           focus,
           analysisProvider,
@@ -434,6 +607,12 @@ export default function Home() {
       if (analyzeTimer) window.clearTimeout(analyzeTimer);
       setStage("analyze");
       await new Promise((resolve) => window.setTimeout(resolve, 420));
+      if (localFilename) {
+        payload.source = {
+          ...payload.source,
+          filename: localFilename,
+        };
+      }
       setResult(payload as AnalysisResult);
       setStage("done");
     } catch (caught) {
@@ -444,8 +623,13 @@ export default function Home() {
             ? "已停止本次处理，你可以调整配置后重新开始。"
             : "处理请求已超时，请确认本地服务正常后重试。",
         );
+      } else if (caught instanceof TypeError && useLocalPipeline) {
+        setError(
+          "浏览器没有连上本机助手。请确认“启动拆片AI”仍在运行，并允许 jackshaw.top 访问本地网络。",
+        );
+        setSettingsOpen(true);
       } else if (caught instanceof TypeError) {
-        setError("网页服务连接中断。请确认本地页面仍能打开，然后点击“重新处理”。");
+        setError("网页服务连接中断，请稍后重试。");
       } else {
         setError(caught instanceof Error ? caught.message : "处理失败，请稍后重试。");
       }
@@ -733,6 +917,26 @@ export default function Home() {
                   <small>{health?.services.whisper ? "已加载" : "未连接"}</small>
                 </div>
               </div>
+              {transcriptionProvider === "local" && (
+                <div className="local-service-actions">
+                  <button
+                    type="button"
+                    onClick={() => void connectLocalServices(true)}
+                    disabled={isWorking || healthChecking}
+                  >
+                    {healthChecking
+                      ? "正在连接…"
+                      : health?.ok
+                        ? "重新检查本机助手"
+                        : "连接本机助手"}
+                  </button>
+                  <span>
+                    {pageRuntime === "hosted"
+                      ? "首次连接时，请在浏览器提示中允许访问本地网络。"
+                      : "启动窗口保持打开，本机下载与转写才能持续工作。"}
+                  </span>
+                </div>
+              )}
               <div className="settings-grid">
                 <label className="settings-field" htmlFor="transcription-provider">
                   <span>字幕转写服务</span>
@@ -790,7 +994,9 @@ export default function Home() {
               </p>
               {transcriptionProvider === "local" && (
                 <p className="local-whisper-note">
-                  字幕在这台电脑上处理，无需 OpenAI Key。首次使用会下载 Whisper base 模型，之后可离线转写。
+                  {pageRuntime === "hosted"
+                    ? "线上网页只把视频交给你电脑上的本机助手，字幕仍在这台电脑上处理，无需 OpenAI Key。"
+                    : "字幕在这台电脑上处理，无需 OpenAI Key。首次使用会下载 Whisper base 模型，之后可离线转写。"}
                 </p>
               )}
               {needsOpenAIKey && (
@@ -829,7 +1035,9 @@ export default function Home() {
             </details>
             <p className="input-help" id="url-help">
               {sourceMode === "url"
-                ? "使用前请确认你拥有下载与处理该内容的权利。单个音频建议不超过 24 MB。"
+                ? pageRuntime === "hosted" && transcriptionProvider === "local"
+                  ? "线上页面需要先连接本机助手。使用前请确认你拥有下载与处理该内容的权利。"
+                  : "使用前请确认你拥有下载与处理该内容的权利。单个音频建议不超过 24 MB。"
                 : "线上版本可直接拆解已有字幕，不需要调用本机 Whisper。字幕和密钥均不写入浏览器存储。"}
             </p>
             {isWorking && (

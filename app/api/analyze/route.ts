@@ -555,6 +555,11 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       url?: string;
       transcriptText?: string;
+      transcriptSegments?: Array<{
+        start?: number;
+        end?: number;
+        text?: string;
+      }>;
       language?: string;
       focus?: string;
       apiKey?: string;
@@ -573,6 +578,22 @@ export async function POST(request: Request) {
     const deepseekApiKey =
       process.env.DEEPSEEK_API_KEY?.trim() || body.deepseekApiKey?.trim();
     const providedTranscript = body.transcriptText?.trim().slice(0, MAX_TRANSCRIPT_CHARS) || "";
+    const providedSegments = Array.isArray(body.transcriptSegments)
+      ? body.transcriptSegments
+          .slice(0, 4_000)
+          .filter(
+            (item) =>
+              Number.isFinite(item?.start) &&
+              Number.isFinite(item?.end) &&
+              typeof item?.text === "string" &&
+              Boolean(item.text.trim()),
+          )
+          .map((item) => ({
+            start: Math.max(0, Number(item.start)),
+            end: Math.max(Number(item.start), Number(item.end)),
+            text: item.text!.trim().slice(0, 2_000),
+          }))
+      : [];
 
     const needsOpenAIKey =
       analysisProvider === "openai" ||
@@ -609,7 +630,7 @@ export async function POST(request: Request) {
       ? null
       : await resolveMedia(safeUrl(body.url!), cookieBrowser);
     const transcription = providedTranscript
-      ? { text: providedTranscript, segments: [] as Array<{ start: number; end: number; text: string }> }
+      ? { text: providedTranscript, segments: providedSegments }
       : transcriptionProvider === "local"
         ? await transcribeAudioLocally(media!, body.language || "auto")
         : await transcribeAudio(media!, body.language || "auto", openaiApiKey!);
