@@ -27,6 +27,7 @@ export async function GET() {
       },
       downloader: {
         cloudAvailable: Boolean(process.env.COBALT_API_URL?.trim()),
+        captionResolverAvailable: true,
       },
     },
     {

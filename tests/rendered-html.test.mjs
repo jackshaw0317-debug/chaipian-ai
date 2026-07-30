@@ -54,6 +54,8 @@ test("项目不再包含启动占位页，并保留本地隐私约束", async ()
     transcribeRoute,
     rewriteRoute,
     capabilitiesRoute,
+    captionsRoute,
+    captionResolver,
     downloader,
     transcriber,
     startScript,
@@ -66,6 +68,8 @@ test("项目不再包含启动占位页，并保留本地隐私约束", async ()
     readFile(new URL("../app/api/transcribe/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/rewrite/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/capabilities/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/captions/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/lib/caption-resolver.ts", import.meta.url), "utf8"),
     readFile(new URL("../scripts/local-downloader.mjs", import.meta.url), "utf8"),
     readFile(new URL("../scripts/local-transcriber.py", import.meta.url), "utf8"),
     readFile(new URL("../scripts/start-local.ps1", import.meta.url), "utf8"),
@@ -93,8 +97,14 @@ test("项目不再包含启动占位页，并保留本地隐私约束", async ()
   assert.match(analyzeRoute, /transcriptSegments/);
   assert.match(analyzeRoute, /api\.groq\.com\/openai\/v1\/audio\/transcriptions/);
   assert.match(analyzeRoute, /api\.siliconflow\.cn\/v1\/audio\/transcriptions/);
-  assert.match(analyzeRoute, /当前云端下载器尚未启用/);
+  assert.match(analyzeRoute, /resolveExistingCaptions/);
+  assert.match(analyzeRoute, /platform-captions/);
   assert.match(capabilitiesRoute, /cloudAvailable/);
+  assert.match(capabilitiesRoute, /captionResolverAvailable: true/);
+  assert.match(captionsRoute, /resolveExistingCaptions/);
+  assert.match(captionResolver, /"captionTracks":/);
+  assert.match(captionResolver, /api\.bilibili\.com\/x\/player\/v2/);
+  assert.match(captionResolver, /<track\\b/);
   assert.match(transcribeRoute, /MAX_FILE_BYTES = 25 \* 1024 \* 1024/);
   assert.match(transcribeRoute, /consumePublicAllowance\(request, "transcribe"\)/);
   assert.match(transcribeRoute, /fallbackFrom = "siliconflow"/);

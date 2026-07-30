@@ -3,6 +3,7 @@ import {
   consumePublicAllowance,
   isSameOriginRequest,
 } from "../../lib/public-ai-access";
+import { resolveExistingCaptions } from "../../lib/caption-resolver";
 
 export const runtime = "edge";
 
@@ -118,7 +119,7 @@ function friendlyError(message: string) {
       : "本地视频下载服务没有成功处理这个链接。请确认服务正在运行、链接可公开访问，或改用更短的视频。";
   }
   if (lower.includes("downloader service is not configured")) {
-    return "这是平台分享页，不是可直接读取的音视频文件。当前云端下载器尚未启用，请改用“上传音视频”或“粘贴字幕”。";
+    return "没有找到可用的平台字幕，且云端下载器尚未启用。请改用“上传音视频”或“粘贴字幕”。";
   }
   if (lower.includes("downloader") || lower.includes("cobalt")) {
     return "云端下载器暂时无法读取这个平台链接，请改用“上传音视频”或“粘贴字幕”。";
@@ -699,6 +700,10 @@ export async function POST(request: Request) {
       analysisProvider?: AnalysisProvider;
       transcriptionProvider?: TranscriptionProvider;
       cookieBrowser?: string;
+      transcriptSource?: "platform-captions";
+      captionPlatform?: "youtube" | "bilibili" | "web";
+      captionLanguage?: string;
+      captionTitle?: string;
     };
     const analysisProvider: AnalysisProvider =
       body.analysisProvider === "openai" ? "openai" : "deepseek";
@@ -725,16 +730,6 @@ export async function POST(request: Request) {
     const siliconflowApiKey =
       userSiliconFlowApiKey || hostedSiliconFlowApiKey;
     const providedTranscript = body.transcriptText?.trim().slice(0, MAX_TRANSCRIPT_CHARS) || "";
-    const usingHostedGroq =
-      !providedTranscript &&
-      transcriptionProvider === "groq" &&
-      !userGroqApiKey &&
-      Boolean(hostedGroqApiKey);
-    const usingHostedSiliconFlow =
-      !providedTranscript &&
-      transcriptionProvider === "siliconflow" &&
-      !userSiliconFlowApiKey &&
-      Boolean(hostedSiliconFlowApiKey);
     const providedSegments = Array.isArray(body.transcriptSegments)
       ? body.transcriptSegments
           .slice(0, 4_000)
@@ -751,10 +746,55 @@ export async function POST(request: Request) {
             text: item.text!.trim().slice(0, 2_000),
           }))
       : [];
+    if (!providedTranscript && (!body.url || body.url.length > 2048)) {
+      return NextResponse.json({ error: "请提供有效的视频链接。" }, { status: 400 });
+    }
+    if (body.transcriptText !== undefined && providedTranscript.length < 20) {
+      return NextResponse.json({ error: "请至少提供 20 个字的字幕内容。" }, { status: 400 });
+    }
+
+    const suppliedPlatformCaptions =
+      providedTranscript && body.transcriptSource === "platform-captions"
+        ? {
+            text: providedTranscript,
+            segments: providedSegments,
+            platform:
+              body.captionPlatform === "youtube" ||
+              body.captionPlatform === "bilibili"
+                ? body.captionPlatform
+                : ("web" as const),
+            language: body.captionLanguage?.slice(0, 30),
+            title: body.captionTitle?.slice(0, 200),
+          }
+        : null;
+    const platformCaptions =
+      suppliedPlatformCaptions ||
+      (providedTranscript
+        ? null
+        : await resolveExistingCaptions(
+            safeUrl(body.url!),
+            body.language || "auto",
+          ));
+    const readyTranscript =
+      providedTranscript || platformCaptions?.text.slice(0, MAX_TRANSCRIPT_CHARS) || "";
+    const readySegments = providedTranscript
+      ? providedSegments
+      : platformCaptions?.segments || [];
+    const needsTranscription = !readyTranscript;
+    const usingHostedGroq =
+      needsTranscription &&
+      transcriptionProvider === "groq" &&
+      !userGroqApiKey &&
+      Boolean(hostedGroqApiKey);
+    const usingHostedSiliconFlow =
+      needsTranscription &&
+      transcriptionProvider === "siliconflow" &&
+      !userSiliconFlowApiKey &&
+      Boolean(hostedSiliconFlowApiKey);
 
     const needsOpenAIKey =
       analysisProvider === "openai" ||
-      (!providedTranscript && transcriptionProvider === "openai");
+      (needsTranscription && transcriptionProvider === "openai");
     if (needsOpenAIKey && !openaiApiKey) {
       return NextResponse.json(
         { error: "当前选择需要 OpenAI API Key。请展开“服务配置”填写，或改用“粘贴字幕 + DeepSeek”。" },
@@ -764,14 +804,14 @@ export async function POST(request: Request) {
     if (needsOpenAIKey && openaiApiKey!.length < 20) {
       return NextResponse.json({ error: "OpenAI API Key 格式不正确，请检查后重试。" }, { status: 400 });
     }
-    if (!providedTranscript && transcriptionProvider === "groq" && !groqApiKey) {
+    if (needsTranscription && transcriptionProvider === "groq" && !groqApiKey) {
       return NextResponse.json(
         { error: "Groq 免费转写尚未启用，请填写有效的 Groq API Key。" },
         { status: 503 },
       );
     }
     if (
-      !providedTranscript &&
+      needsTranscription &&
       transcriptionProvider === "groq" &&
       groqApiKey!.length < 20
     ) {
@@ -781,7 +821,7 @@ export async function POST(request: Request) {
       );
     }
     if (
-      !providedTranscript &&
+      needsTranscription &&
       transcriptionProvider === "siliconflow" &&
       !siliconflowApiKey
     ) {
@@ -794,7 +834,7 @@ export async function POST(request: Request) {
       );
     }
     if (
-      !providedTranscript &&
+      needsTranscription &&
       transcriptionProvider === "siliconflow" &&
       siliconflowApiKey!.length < 20
     ) {
@@ -812,19 +852,12 @@ export async function POST(request: Request) {
     if (analysisProvider === "deepseek" && deepseekApiKey!.length < 20) {
       return NextResponse.json({ error: "DeepSeek API Key 格式不正确，请检查后重试。" }, { status: 400 });
     }
-    if (!providedTranscript && (!body.url || body.url.length > 2048)) {
-      return NextResponse.json({ error: "请提供有效的视频链接。" }, { status: 400 });
-    }
-    if (body.transcriptText !== undefined && providedTranscript.length < 20) {
-      return NextResponse.json({ error: "请至少提供 20 个字的字幕内容。" }, { status: 400 });
-    }
-
     const cookieBrowser = ["edge", "chrome", "fresh-edge"].includes(body.cookieBrowser || "")
       ? body.cookieBrowser!
       : "";
-    const media = providedTranscript
-      ? null
-      : await resolveMedia(safeUrl(body.url!), cookieBrowser);
+    const media = needsTranscription
+      ? await resolveMedia(safeUrl(body.url!), cookieBrowser)
+      : null;
     if (usingHostedGroq || usingHostedSiliconFlow) {
       const allowance = await consumePublicAllowance(request, "transcribe");
       if (!allowance.allowed) {
@@ -840,8 +873,8 @@ export async function POST(request: Request) {
     let actualTranscriptionProvider = transcriptionProvider;
     let fallbackFrom: TranscriptionProvider | undefined;
     let transcription: { text: string; segments: Array<{ start: number; end: number; text: string }> };
-    if (providedTranscript) {
-      transcription = { text: providedTranscript, segments: providedSegments };
+    if (readyTranscript) {
+      transcription = { text: readyTranscript, segments: readySegments };
     } else if (transcriptionProvider === "local") {
       transcription = await transcribeAudioLocally(
         media!,
@@ -906,7 +939,12 @@ export async function POST(request: Request) {
           );
 
     return NextResponse.json({
-      source: { filename: media?.filename || "粘贴的字幕" },
+      source: {
+        title: platformCaptions?.title,
+        filename:
+          media?.filename ||
+          (platformCaptions ? "平台现成字幕" : "粘贴的字幕"),
+      },
       transcript: transcription.text,
       segments: transcription.segments,
       analysis,
@@ -914,7 +952,9 @@ export async function POST(request: Request) {
         transcriptionProvider: actualTranscriptionProvider,
         fallbackFrom,
         transcription:
-          providedTranscript
+          platformCaptions
+            ? "platform-captions"
+            : providedTranscript
             ? "provided-transcript"
             : actualTranscriptionProvider === "local"
             ? process.env.LOCAL_WHISPER_MODEL || "base"
@@ -923,6 +963,8 @@ export async function POST(request: Request) {
               : actualTranscriptionProvider === "siliconflow"
                 ? process.env.SILICONFLOW_ASR_MODEL || "FunAudioLLM/SenseVoiceSmall"
               : process.env.TRANSCRIBE_MODEL || "whisper-1",
+        captionPlatform: platformCaptions?.platform,
+        captionLanguage: platformCaptions?.language,
         analysisProvider,
         analysisModel:
           analysisProvider === "deepseek"

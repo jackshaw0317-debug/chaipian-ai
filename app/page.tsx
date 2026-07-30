@@ -51,6 +51,8 @@ type AnalysisResult = {
     transcriptionProvider?: TranscriptionProvider;
     transcription?: string;
     fallbackFrom?: TranscriptionProvider;
+    captionPlatform?: "youtube" | "bilibili" | "web";
+    captionLanguage?: string;
     analysisProvider?: "deepseek" | "openai";
     analysisModel?: string;
   };
@@ -85,6 +87,7 @@ type SiteCapabilities = {
   };
   downloader: {
     cloudAvailable: boolean;
+    captionResolverAvailable: boolean;
   };
 };
 
@@ -97,6 +100,13 @@ type LocalMedia = {
 type LocalTranscription = {
   text: string;
   segments: TranscriptSegment[];
+};
+
+type PlatformCaptionResult = LocalTranscription & {
+  found: true;
+  platform: "youtube" | "bilibili" | "web";
+  language?: string;
+  title?: string;
 };
 
 type LoopbackRequestInit = RequestInit & {
@@ -233,6 +243,33 @@ async function transcribeMediaLocally(
   };
 }
 
+async function fetchPlatformCaptions(
+  sourceUrl: string,
+  language: string,
+  signal: AbortSignal,
+): Promise<PlatformCaptionResult | null> {
+  const response = await fetch("/api/captions", {
+    method: "POST",
+    signal,
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ url: sourceUrl, language }),
+  });
+  const payload = (await response.json().catch(() => null)) as
+    | (Partial<PlatformCaptionResult> & { found?: boolean })
+    | null;
+  if (!response.ok || !payload?.found || !payload.text) return null;
+  return {
+    found: true,
+    text: payload.text,
+    segments: Array.isArray(payload.segments) ? payload.segments : [],
+    platform: payload.platform || "web",
+    language: payload.language,
+    title: payload.title,
+  };
+}
+
 type RewriteFormat = "short-video" | "xiaohongshu" | "private-domain" | "advertising";
 
 type RewriteResult = {
@@ -307,8 +344,16 @@ const demoResult: AnalysisResult = {
 };
 
 const baseStages = [
-  { key: "download", label: "读取视频", detail: "提取可转写的音频内容" },
-  { key: "transcribe", label: "语音转写", detail: "识别语音并生成可复用字幕" },
+  {
+    key: "download",
+    label: "优先读取字幕",
+    detail: "有平台字幕直接使用；没有再提取音频",
+  },
+  {
+    key: "transcribe",
+    label: "音频转写兜底",
+    detail: "没有现成字幕时再识别语音",
+  },
 ] as const;
 
 const stageIndex: Record<Stage, number> = {
@@ -447,7 +492,7 @@ export default function Home() {
             ? transcriptionProvider === "local"
               ? "发送给本机 Whisper 并生成时间轴"
               : `上传至${transcriptionService}并生成字幕`
-            : "识别语音并生成时间轴",
+            : "没有平台字幕时，提取音频并生成时间轴",
     },
     {
       key: "analyze" as const,
@@ -649,6 +694,7 @@ export default function Home() {
         pageRuntime === "hosted" &&
         transcriptionProvider !== "local" &&
         !capabilities?.downloader.cloudAvailable &&
+        !capabilities?.downloader.captionResolverAvailable &&
         isPlatformSharePage(url.trim())
       ) {
         setUrlNeedsUpload(true);
@@ -741,20 +787,47 @@ export default function Home() {
     try {
       let localFilename = "";
       let localTranscription: LocalTranscription | null = null;
+      let localCaptionMetadata: Pick<
+        PlatformCaptionResult,
+        "platform" | "language" | "title"
+      > | null = null;
       if (useLocalPipeline && sourceMode === "url") {
         setStage("download");
-        const media = await downloadVideoLocally(
+        const platformCaptions = await fetchPlatformCaptions(
           url.trim(),
-          cookieBrowser,
-          controller.signal,
-        );
-        localFilename = media.filename;
-        setStage("transcribe");
-        localTranscription = await transcribeMediaLocally(
-          media,
           language,
           controller.signal,
-        );
+        ).catch((caught) => {
+          if (caught instanceof DOMException && caught.name === "AbortError") {
+            throw caught;
+          }
+          return null;
+        });
+        if (platformCaptions) {
+          localFilename = platformCaptions.title || "平台现成字幕";
+          localTranscription = {
+            text: platformCaptions.text,
+            segments: platformCaptions.segments,
+          };
+          localCaptionMetadata = {
+            platform: platformCaptions.platform,
+            language: platformCaptions.language,
+            title: platformCaptions.title,
+          };
+        } else {
+          const media = await downloadVideoLocally(
+            url.trim(),
+            cookieBrowser,
+            controller.signal,
+          );
+          localFilename = media.filename;
+          setStage("transcribe");
+          localTranscription = await transcribeMediaLocally(
+            media,
+            language,
+            controller.signal,
+          );
+        }
         setStage("analyze");
       } else if (useLocalPipeline && sourceMode === "upload" && uploadFile) {
         setStage("transcribe");
@@ -812,6 +885,10 @@ export default function Home() {
               ? transcriptInput.trim()
               : localTranscription?.text,
           transcriptSegments: localTranscription?.segments,
+          transcriptSource: localCaptionMetadata ? "platform-captions" : undefined,
+          captionPlatform: localCaptionMetadata?.platform,
+          captionLanguage: localCaptionMetadata?.language,
+          captionTitle: localCaptionMetadata?.title,
           language,
           focus,
           analysisProvider,
@@ -1503,9 +1580,13 @@ export default function Home() {
                 ? pageRuntime === "hosted" && transcriptionProvider === "local"
                   ? "线上页面需要先连接本机助手。使用前请确认你拥有下载与处理该内容的权利。"
                   : transcriptionProvider === "groq"
-                    ? "音视频直链可由 Groq 在线转写；平台分享链接如无法读取，请改用“上传音视频”或“粘贴字幕”。"
+                    ? capabilities?.downloader.cloudAvailable
+                      ? "平台链接会先读取现成字幕；没有字幕时，再由云端下载器提取音频并交给 Groq。"
+                      : "平台链接会先读取现成字幕；如果平台没有字幕，目前请改用“上传音视频”。"
                     : transcriptionProvider === "siliconflow"
-                      ? "音视频直链可由硅基流动在线转写；平台分享链接如无法读取，请改用“上传音视频”或“粘贴字幕”。"
+                      ? capabilities?.downloader.cloudAvailable
+                        ? "平台链接会先读取现成字幕；没有字幕时，再由云端下载器提取音频并交给硅基流动。"
+                        : "平台链接会先读取现成字幕；如果平台没有字幕，目前请改用“上传音视频”。"
                     : "使用前请确认你拥有下载与处理该内容的权利。单个音频建议不超过 24 MB。"
                 : sourceMode === "upload"
                   ? transcriptionProvider === "local"
@@ -1600,6 +1681,19 @@ export default function Home() {
               <p className="eyebrow"><span>02</span> ANALYSIS REPORT</p>
               <h2>{result.analysis.title}</h2>
               <p>{result.analysis.oneLine}</p>
+              <span className="source-method-badge">
+                {result.processing?.transcription === "platform-captions"
+                  ? `字幕来源 · ${
+                      result.processing.captionPlatform === "youtube"
+                        ? "YouTube"
+                        : result.processing.captionPlatform === "bilibili"
+                          ? "哔哩哔哩"
+                          : "平台现成字幕"
+                    }`
+                  : result.processing?.transcription === "provided-transcript"
+                    ? "字幕来源 · 手动粘贴"
+                    : `字幕来源 · ${transcriptionService}`}
+              </span>
             </div>
             <div className="result-actions">
               <button type="button" onClick={copyReport}>{copied ? "已复制" : "复制报告"}</button>

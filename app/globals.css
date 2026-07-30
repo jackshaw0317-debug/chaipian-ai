@@ -1076,11 +1076,25 @@ main {
   letter-spacing: -.055em;
 }
 
-.results-heading > div > p:last-child {
+.results-heading > div > p:not(.eyebrow) {
   max-width: 720px;
   margin: 17px 0 0;
   color: var(--muted);
   font-size: 14px;
+}
+
+.source-method-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  margin-top: 14px;
+  border: 1px solid #a9d33f;
+  background: #f4fadf;
+  color: #405709;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .02em;
 }
 
 .result-actions {
