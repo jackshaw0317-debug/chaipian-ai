@@ -15,6 +15,9 @@ type SourceAnalysis = {
   summary: string;
   audience: string;
   contentType: string;
+  contentFormula: string;
+  hookPattern: string;
+  conversionPath: string;
   structure: Array<{ label: string; detail: string; time: string }>;
   highlights: Array<{ quote: string; why: string }>;
   reusableLines: string[];
@@ -76,6 +79,9 @@ function normalizeAnalysis(value: unknown): SourceAnalysis | null {
     summary: safeString(input.summary, 2_000),
     audience: safeString(input.audience, 500),
     contentType: safeString(input.contentType, 300),
+    contentFormula: safeString(input.contentFormula, 800),
+    hookPattern: safeString(input.hookPattern, 800),
+    conversionPath: safeString(input.conversionPath, 800),
     structure: structure
       .map((item) => {
         const row = item && typeof item === "object" ? item as Record<string, unknown> : {};
@@ -102,6 +108,9 @@ function normalizeAnalysis(value: unknown): SourceAnalysis | null {
   if (
     !normalized.title ||
     !normalized.summary ||
+    !normalized.contentFormula ||
+    !normalized.hookPattern ||
+    !normalized.conversionPath ||
     normalized.structure.length === 0 ||
     normalized.highlights.length === 0
   ) {

@@ -9,7 +9,7 @@ export const runtime = "edge";
 const MAX_AUDIO_BYTES = 24 * 1024 * 1024;
 const MAX_TRANSCRIPT_CHARS = 120_000;
 type AnalysisProvider = "openai" | "deepseek";
-type TranscriptionProvider = "local" | "openai" | "groq";
+type TranscriptionProvider = "local" | "openai" | "groq" | "siliconflow";
 
 type DownloaderResponse = {
   status?: "tunnel" | "redirect" | "local-processing" | "picker" | "error";
@@ -84,6 +84,9 @@ function friendlyError(message: string) {
     return "处理超时。请确认本机服务仍在运行，或换一个更短的视频后重试。";
   }
   if (lower.includes("api key") || lower.includes("unauthorized") || lower.includes("401")) {
+    if (lower.includes("siliconflow")) {
+      return "硅基流动 API Key 无效，请检查后重试。";
+    }
     if (lower.includes("groq")) {
       return "Groq API Key 无效，请检查后重试。";
     }
@@ -337,6 +340,49 @@ async function transcribeAudioWithGroq(
   };
 }
 
+async function transcribeAudioWithSiliconFlow(
+  media: Awaited<ReturnType<typeof resolveMedia>>,
+  apiKey: string,
+) {
+  const model =
+    process.env.SILICONFLOW_ASR_MODEL || "FunAudioLLM/SenseVoiceSmall";
+  const form = new FormData();
+  form.append(
+    "file",
+    new File([media.data], media.filename, { type: media.contentType }),
+  );
+  form.append("model", model);
+
+  const response = await fetchWithTimeout(
+    "https://api.siliconflow.cn/v1/audio/transcriptions",
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+    },
+    180_000,
+  );
+  const payload = (await response.json()) as {
+    text?: string;
+    message?: string;
+    error?: { message?: string } | string;
+  };
+  const errorMessage =
+    typeof payload.error === "string"
+      ? payload.error
+      : payload.error?.message || payload.message;
+  if (!response.ok || !payload.text?.trim()) {
+    throw new Error(
+      `SiliconFlow transcription failed: ${errorMessage || response.status}`,
+    );
+  }
+
+  return {
+    text: payload.text.trim(),
+    segments: [],
+  };
+}
+
 async function transcribeAudioLocally(
   media: Awaited<ReturnType<typeof resolveMedia>>,
   language: string,
@@ -408,7 +454,16 @@ function parseJsonResult(text: string) {
     .replace(/\s*```$/, "");
   const value = JSON.parse(normalized) as Record<string, unknown>;
   const scores = value.scores as Record<string, unknown> | undefined;
-  const requiredStrings = ["title", "oneLine", "summary", "audience", "contentType"];
+  const requiredStrings = [
+    "title",
+    "oneLine",
+    "summary",
+    "audience",
+    "contentType",
+    "contentFormula",
+    "hookPattern",
+    "conversionPath",
+  ];
   const requiredArrays = ["structure", "highlights", "reusableLines", "improvements", "tags"];
   const scoreKeys = ["hook", "clarity", "emotion", "conversion"];
   const valid =
@@ -442,6 +497,9 @@ function analysisPrompts(transcript: string, focus: string) {
       summary: { type: "string" },
       audience: { type: "string" },
       contentType: { type: "string" },
+      contentFormula: { type: "string" },
+      hookPattern: { type: "string" },
+      conversionPath: { type: "string" },
       scores: {
         type: "object",
         additionalProperties: false,
@@ -507,6 +565,9 @@ function analysisPrompts(transcript: string, focus: string) {
       "summary",
       "audience",
       "contentType",
+      "contentFormula",
+      "hookPattern",
+      "conversionPath",
       "scores",
       "structure",
       "highlights",
@@ -522,6 +583,9 @@ function analysisPrompts(transcript: string, focus: string) {
 
 请只返回一个合法 JSON 对象，不要使用 Markdown 代码块，也不要添加解释。JSON 必须包含：
 - title、oneLine、summary、audience、contentType：字符串
+- contentFormula：用“步骤 A → 步骤 B → 步骤 C”概括内容公式
+- hookPattern：说明开场钩子的具体机制和可复用方法
+- conversionPath：说明内容如何从注意力推进到信任或行动
 - scores：包含 hook、clarity、emotion、conversion 四个 0-100 的整数
 - structure：3-8 项，每项包含 label、detail、time
 - highlights：2-5 项，每项包含 quote、why
@@ -631,6 +695,7 @@ export async function POST(request: Request) {
       openaiApiKey?: string;
       deepseekApiKey?: string;
       groqApiKey?: string;
+      siliconflowApiKey?: string;
       analysisProvider?: AnalysisProvider;
       transcriptionProvider?: TranscriptionProvider;
       cookieBrowser?: string;
@@ -640,6 +705,8 @@ export async function POST(request: Request) {
     const transcriptionProvider: TranscriptionProvider =
       body.transcriptionProvider === "openai"
         ? "openai"
+        : body.transcriptionProvider === "siliconflow"
+          ? "siliconflow"
         : body.transcriptionProvider === "groq"
           ? "groq"
           : "local";
@@ -653,12 +720,21 @@ export async function POST(request: Request) {
     const userGroqApiKey = body.groqApiKey?.trim();
     const hostedGroqApiKey = process.env.GROQ_API_KEY?.trim();
     const groqApiKey = userGroqApiKey || hostedGroqApiKey;
+    const userSiliconFlowApiKey = body.siliconflowApiKey?.trim();
+    const hostedSiliconFlowApiKey = process.env.SILICONFLOW_API_KEY?.trim();
+    const siliconflowApiKey =
+      userSiliconFlowApiKey || hostedSiliconFlowApiKey;
     const providedTranscript = body.transcriptText?.trim().slice(0, MAX_TRANSCRIPT_CHARS) || "";
     const usingHostedGroq =
       !providedTranscript &&
       transcriptionProvider === "groq" &&
       !userGroqApiKey &&
       Boolean(hostedGroqApiKey);
+    const usingHostedSiliconFlow =
+      !providedTranscript &&
+      transcriptionProvider === "siliconflow" &&
+      !userSiliconFlowApiKey &&
+      Boolean(hostedSiliconFlowApiKey);
     const providedSegments = Array.isArray(body.transcriptSegments)
       ? body.transcriptSegments
           .slice(0, 4_000)
@@ -704,6 +780,29 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+    if (
+      !providedTranscript &&
+      transcriptionProvider === "siliconflow" &&
+      !siliconflowApiKey
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "硅基流动免费转写尚未启用，请填写有效的 SiliconFlow API Key。",
+        },
+        { status: 503 },
+      );
+    }
+    if (
+      !providedTranscript &&
+      transcriptionProvider === "siliconflow" &&
+      siliconflowApiKey!.length < 20
+    ) {
+      return NextResponse.json(
+        { error: "SiliconFlow API Key 格式不正确，请检查后重试。" },
+        { status: 400 },
+      );
+    }
     if (analysisProvider === "deepseek" && !deepseekApiKey) {
       return NextResponse.json(
         { error: "已选择 DeepSeek 拆解，请在“服务配置”中填写 DeepSeek API Key。" },
@@ -726,7 +825,7 @@ export async function POST(request: Request) {
     const media = providedTranscript
       ? null
       : await resolveMedia(safeUrl(body.url!), cookieBrowser);
-    if (usingHostedGroq) {
+    if (usingHostedGroq || usingHostedSiliconFlow) {
       const allowance = await consumePublicAllowance(request, "transcribe");
       if (!allowance.allowed) {
         return NextResponse.json(
@@ -738,13 +837,47 @@ export async function POST(request: Request) {
         );
       }
     }
-    const transcription = providedTranscript
-      ? { text: providedTranscript, segments: providedSegments }
-      : transcriptionProvider === "local"
-        ? await transcribeAudioLocally(media!, body.language || "auto")
-        : transcriptionProvider === "groq"
-          ? await transcribeAudioWithGroq(media!, body.language || "auto", groqApiKey!)
-          : await transcribeAudio(media!, body.language || "auto", openaiApiKey!);
+    let actualTranscriptionProvider = transcriptionProvider;
+    let fallbackFrom: TranscriptionProvider | undefined;
+    let transcription: { text: string; segments: Array<{ start: number; end: number; text: string }> };
+    if (providedTranscript) {
+      transcription = { text: providedTranscript, segments: providedSegments };
+    } else if (transcriptionProvider === "local") {
+      transcription = await transcribeAudioLocally(
+        media!,
+        body.language || "auto",
+      );
+    } else if (transcriptionProvider === "groq") {
+      transcription = await transcribeAudioWithGroq(
+        media!,
+        body.language || "auto",
+        groqApiKey!,
+      );
+    } else if (transcriptionProvider === "siliconflow") {
+      try {
+        transcription = await transcribeAudioWithSiliconFlow(
+          media!,
+          siliconflowApiKey!,
+        );
+      } catch (error) {
+        const canUseHostedFallback =
+          !userSiliconFlowApiKey && Boolean(hostedGroqApiKey);
+        if (!canUseHostedFallback) throw error;
+        fallbackFrom = "siliconflow";
+        actualTranscriptionProvider = "groq";
+        transcription = await transcribeAudioWithGroq(
+          media!,
+          body.language || "auto",
+          hostedGroqApiKey!,
+        );
+      }
+    } else {
+      transcription = await transcribeAudio(
+        media!,
+        body.language || "auto",
+        openaiApiKey!,
+      );
+    }
     if (usingHostedDeepseek) {
       const allowance = await consumePublicAllowance(request, "analyze");
       if (!allowance.allowed) {
@@ -778,14 +911,17 @@ export async function POST(request: Request) {
       segments: transcription.segments,
       analysis,
       processing: {
-        transcriptionProvider,
+        transcriptionProvider: actualTranscriptionProvider,
+        fallbackFrom,
         transcription:
           providedTranscript
             ? "provided-transcript"
-            : transcriptionProvider === "local"
+            : actualTranscriptionProvider === "local"
             ? process.env.LOCAL_WHISPER_MODEL || "base"
-            : transcriptionProvider === "groq"
+            : actualTranscriptionProvider === "groq"
               ? process.env.GROQ_TRANSCRIBE_MODEL || "whisper-large-v3-turbo"
+              : actualTranscriptionProvider === "siliconflow"
+                ? process.env.SILICONFLOW_ASR_MODEL || "FunAudioLLM/SenseVoiceSmall"
               : process.env.TRANSCRIBE_MODEL || "whisper-1",
         analysisProvider,
         analysisModel:

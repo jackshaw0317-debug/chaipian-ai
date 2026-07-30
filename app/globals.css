@@ -455,6 +455,16 @@ main {
   color: #d7ccff;
 }
 
+.siliconflow-trial-note {
+  border-color: #78a9df;
+  background: #edf5ff;
+  color: #375b82;
+}
+
+.siliconflow-trial-note > span {
+  color: #b9dcff;
+}
+
 .local-settings {
   margin-top: 14px;
   border-top: 1px solid var(--line);
@@ -603,7 +613,7 @@ main {
 .service-health {
   margin: 14px 0 2px 20px;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 8px;
 }
 
@@ -1145,6 +1155,7 @@ main {
 
 .summary-card {
   grid-column: span 7;
+  order: 0;
   background: var(--ink);
   color: white;
 }
@@ -1172,6 +1183,51 @@ main {
 
 .score-card {
   grid-column: span 5;
+  order: 0;
+}
+
+.strategy-card {
+  grid-column: span 12;
+  order: 1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.strategy-card .card-label {
+  grid-column: 1 / -1;
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 15px 20px;
+}
+
+.strategy-row {
+  min-width: 0;
+  padding: 20px;
+}
+
+.strategy-row + .strategy-row {
+  border-left: 1px solid var(--line);
+}
+
+.strategy-row span {
+  display: block;
+  margin-bottom: 9px;
+  color: #867f72;
+  font-family: var(--font-display), monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+
+.strategy-row p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.65;
 }
 
 .score-grid {
@@ -1235,6 +1291,7 @@ main {
 
 .structure-card {
   grid-column: span 7;
+  order: 2;
 }
 
 .timeline {
@@ -1299,6 +1356,7 @@ main {
 
 .highlights-card {
   grid-column: span 5;
+  order: 2;
   background: #ede6ff;
 }
 
@@ -1334,6 +1392,7 @@ main {
 
 .reusable-card {
   grid-column: span 5;
+  order: 3;
 }
 
 .reusable-list {
@@ -1385,6 +1444,7 @@ main {
 
 .improve-card {
   grid-column: span 7;
+  order: 3;
   background: #f1f4df;
 }
 
@@ -1793,6 +1853,7 @@ main {
 
   .summary-card,
   .score-card,
+  .strategy-card,
   .structure-card,
   .highlights-card,
   .reusable-card,
@@ -1928,6 +1989,16 @@ main {
 
   .report-card {
     padding: 20px;
+  }
+
+  .strategy-card {
+    grid-template-columns: 1fr;
+    padding: 0;
+  }
+
+  .strategy-row + .strategy-row {
+    border-left: 0;
+    border-top: 1px solid var(--line);
   }
 
   .summary-text {

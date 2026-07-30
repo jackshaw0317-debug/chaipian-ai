@@ -75,7 +75,7 @@ test("已跟踪文本文件不包含常见真实密钥", () => {
   const secretPatterns = [
     /\bsk-[A-Za-z0-9_-]{20,}\b/g,
     /\bgsk_[A-Za-z0-9]{20,}\b/g,
-    /\b(?:DEEPSEEK|GROQ|OPENAI)_API_KEY[ \t]*=[ \t]*\S+/g,
+    /\b(?:DEEPSEEK|GROQ|OPENAI|SILICONFLOW)_API_KEY[ \t]*=[ \t]*\S+/g,
   ];
 
   for (const path of tracked) {

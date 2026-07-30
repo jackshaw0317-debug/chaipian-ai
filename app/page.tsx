@@ -10,6 +10,8 @@ type TranscriptSegment = {
   text: string;
 };
 
+type TranscriptionProvider = "local" | "openai" | "groq" | "siliconflow";
+
 type AnalysisResult = {
   source?: {
     title?: string;
@@ -23,6 +25,9 @@ type AnalysisResult = {
     summary: string;
     audience: string;
     contentType: string;
+    contentFormula: string;
+    hookPattern: string;
+    conversionPath: string;
     scores: {
       hook: number;
       clarity: number;
@@ -41,6 +46,13 @@ type AnalysisResult = {
     reusableLines: string[];
     improvements: string[];
     tags: string[];
+  };
+  processing?: {
+    transcriptionProvider?: TranscriptionProvider;
+    transcription?: string;
+    fallbackFrom?: TranscriptionProvider;
+    analysisProvider?: "deepseek" | "openai";
+    analysisModel?: string;
   };
 };
 
@@ -63,6 +75,13 @@ type SiteCapabilities = {
     publicTrial: boolean;
     dailyTranscribeLimit: number;
     maxFileBytes: number;
+  };
+  siliconflow: {
+    publicTrial: boolean;
+    dailyTranscribeLimit: number;
+    maxFileBytes: number;
+    model: string;
+    groqFallback: boolean;
   };
   downloader: {
     cloudAvailable: boolean;
@@ -253,6 +272,9 @@ const demoResult: AnalysisResult = {
       "内容先推翻“没人看完是因为内容不好”的常见判断，再把问题锁定在前五秒的信息不清晰，随后给出结果前置、场景具体化、持续制造信息增量三个动作。整体结构紧凑，方法可执行，适合知识类短视频。",
     audience: "正在做知识口播、个人 IP 或品牌内容的创作者",
     contentType: "方法论 / 短视频增长",
+    contentFormula: "反常识诊断 → 锁定关键原因 → 给出三步动作 → 价值收束",
+    hookPattern: "先否定观众的常见判断，再指出真正问题，制造认知缺口。",
+    conversionPath: "用具体动作建立可信度，以收藏理由和下一步预告推动行动。",
     scores: { hook: 92, clarity: 88, emotion: 76, conversion: 81 },
     structure: [
       { label: "反常识开场", detail: "否定“内容不够好”的直觉答案，制造认知缺口。", time: "00:00" },
@@ -286,7 +308,7 @@ const demoResult: AnalysisResult = {
 
 const baseStages = [
   { key: "download", label: "读取视频", detail: "提取可转写的音频内容" },
-  { key: "transcribe", label: "Whisper 转写", detail: "识别语音并生成时间轴" },
+  { key: "transcribe", label: "语音转写", detail: "识别语音并生成可复用字幕" },
 ] as const;
 
 const stageIndex: Record<Stage, number> = {
@@ -344,8 +366,10 @@ export default function Home() {
   const [openaiApiKey, setOpenaiApiKey] = useState("");
   const [deepseekApiKey, setDeepseekApiKey] = useState("");
   const [groqApiKey, setGroqApiKey] = useState("");
+  const [siliconflowApiKey, setSiliconflowApiKey] = useState("");
   const [analysisProvider, setAnalysisProvider] = useState<"deepseek" | "openai">("deepseek");
-  const [transcriptionProvider, setTranscriptionProvider] = useState<"local" | "openai" | "groq">("local");
+  const [transcriptionProvider, setTranscriptionProvider] =
+    useState<TranscriptionProvider>("local");
   const [cookieBrowser, setCookieBrowser] = useState<
     "fresh-edge" | "none" | "edge" | "chrome"
   >("fresh-edge");
@@ -384,6 +408,8 @@ export default function Home() {
       ? "直接使用字幕"
       : transcriptionProvider === "local"
         ? "本机 Whisper"
+        : transcriptionProvider === "siliconflow"
+          ? "硅基流动 ASR"
         : transcriptionProvider === "groq"
           ? "Groq Whisper"
           : "OpenAI Whisper";
@@ -392,8 +418,17 @@ export default function Home() {
     (sourceMode !== "transcript" && transcriptionProvider === "openai");
   const publicDeepseekTrial = capabilities?.deepseek.publicTrial === true;
   const publicGroqTrial = capabilities?.groq.publicTrial === true;
+  const publicSiliconFlowTrial =
+    capabilities?.siliconflow.publicTrial === true;
   const usesGroq =
     sourceMode !== "transcript" && transcriptionProvider === "groq";
+  const usesSiliconFlow =
+    sourceMode !== "transcript" && transcriptionProvider === "siliconflow";
+  const preferredCloudProvider: TranscriptionProvider = publicSiliconFlowTrial
+    ? "siliconflow"
+    : publicGroqTrial
+      ? "groq"
+      : "siliconflow";
   const localModeEnabled =
     sourceMode !== "transcript" && transcriptionProvider === "local";
   const stages = [
@@ -411,7 +446,7 @@ export default function Home() {
           : sourceMode === "upload"
             ? transcriptionProvider === "local"
               ? "发送给本机 Whisper 并生成时间轴"
-              : "上传至 Groq 并生成时间轴"
+              : `上传至${transcriptionService}并生成字幕`
             : "识别语音并生成时间轴",
     },
     {
@@ -431,7 +466,9 @@ export default function Home() {
       ? "本机服务已就绪"
       : pageRuntime === "hosted" && !localAccessRequested
         ? "本机助手待连接"
-      : sourceMode === "transcript" || (sourceMode === "upload" && publicGroqTrial)
+      : sourceMode === "transcript" ||
+          (sourceMode === "upload" &&
+            (publicSiliconFlowTrial || publicGroqTrial))
         ? "在线字幕模式可用"
         : `本机服务 ${healthyServiceCount}/2`;
 
@@ -448,6 +485,11 @@ export default function Home() {
       "",
       `- 目标受众：${a.audience}`,
       `- 内容类型：${a.contentType}`,
+      "",
+      "## 可复用策略",
+      `- 内容公式：${a.contentFormula}`,
+      `- 开场机制：${a.hookPattern}`,
+      `- 转化路径：${a.conversionPath}`,
       "",
       "## 内容结构",
       ...a.structure.map((item) => `- ${item.time}｜${item.label}：${item.detail}`),
@@ -522,7 +564,9 @@ export default function Home() {
         const payload = (await response.json()) as SiteCapabilities;
         if (active) {
           setCapabilities(payload);
-          if (!localPage && payload.groq?.publicTrial) {
+          if (!localPage && payload.siliconflow?.publicTrial) {
+            setTranscriptionProvider("siliconflow");
+          } else if (!localPage && payload.groq?.publicTrial) {
             setTranscriptionProvider("groq");
           }
         }
@@ -567,7 +611,7 @@ export default function Home() {
     setError("");
     setUrlNeedsUpload(false);
     if (!enabled) {
-      setTranscriptionProvider("groq");
+      setTranscriptionProvider(preferredCloudProvider);
       return;
     }
 
@@ -576,7 +620,9 @@ export default function Home() {
     await connectLocalServices(true, sourceMode === "url");
   }
 
-  function focusSetting(id: "deepseek-key" | "openai-key" | "groq-key") {
+  function focusSetting(
+    id: "deepseek-key" | "openai-key" | "groq-key" | "siliconflow-key",
+  ) {
     setSettingsOpen(true);
     window.requestAnimationFrame(() => {
       document.getElementById(id)?.focus();
@@ -601,7 +647,7 @@ export default function Home() {
 
       if (
         pageRuntime === "hosted" &&
-        transcriptionProvider === "groq" &&
+        transcriptionProvider !== "local" &&
         !capabilities?.downloader.cloudAvailable &&
         isPlatformSharePage(url.trim())
       ) {
@@ -643,6 +689,17 @@ export default function Home() {
     if (usesGroq && !publicGroqTrial && groqApiKey.trim().length < 20) {
       setError("Groq 免费转写尚未启用，请先在“服务配置”中填写 Groq API Key。");
       focusSetting("groq-key");
+      return;
+    }
+    if (
+      usesSiliconFlow &&
+      !publicSiliconFlowTrial &&
+      siliconflowApiKey.trim().length < 20
+    ) {
+      setError(
+        "硅基流动免费转写尚未启用，请先在“服务配置”中填写 SiliconFlow API Key。",
+      );
+      focusSetting("siliconflow-key");
       return;
     }
 
@@ -717,7 +774,14 @@ export default function Home() {
         const uploadForm = new FormData();
         uploadForm.append("file", uploadFile, uploadFile.name);
         uploadForm.append("language", language);
+        uploadForm.append("provider", transcriptionProvider);
         if (groqApiKey.trim()) uploadForm.append("groqApiKey", groqApiKey.trim());
+        if (siliconflowApiKey.trim()) {
+          uploadForm.append(
+            "siliconflowApiKey",
+            siliconflowApiKey.trim(),
+          );
+        }
         const uploadResponse = await fetch("/api/transcribe", {
           method: "POST",
           signal: controller.signal,
@@ -756,6 +820,7 @@ export default function Home() {
           openaiApiKey: openaiApiKey.trim() || undefined,
           deepseekApiKey: deepseekApiKey.trim() || undefined,
           groqApiKey: groqApiKey.trim() || undefined,
+          siliconflowApiKey: siliconflowApiKey.trim() || undefined,
         }),
       });
       const rawPayload = await response.text();
@@ -827,6 +892,9 @@ export default function Home() {
 
   function switchSourceMode(mode: "upload" | "transcript") {
     setSourceMode(mode);
+    if (mode === "upload" && transcriptionProvider === "openai") {
+      setTranscriptionProvider(preferredCloudProvider);
+    }
     setStage("idle");
     setError("");
     setUrlNeedsUpload(false);
@@ -956,17 +1024,22 @@ export default function Home() {
 
   function downloadSrt() {
     if (!result) return;
-    const content = result.segments
-      .map(
-        (segment, index) =>
-          `${index + 1}\n${toSrtTime(segment.start)} --> ${toSrtTime(segment.end)}\n${segment.text.trim()}\n`,
-      )
-      .join("\n");
+    const hasTimeline = result.segments.length > 0;
+    const content = hasTimeline
+      ? result.segments
+          .map(
+            (segment, index) =>
+              `${index + 1}\n${toSrtTime(segment.start)} --> ${toSrtTime(segment.end)}\n${segment.text.trim()}\n`,
+          )
+          .join("\n")
+      : result.transcript;
     const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
     const href = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = href;
-    anchor.download = "video-transcript.srt";
+    anchor.download = hasTimeline
+      ? "video-transcript.srt"
+      : "video-transcript.txt";
     anchor.click();
     URL.revokeObjectURL(href);
   }
@@ -1149,6 +1222,19 @@ export default function Home() {
                 </p>
               </div>
             )}
+            {usesSiliconFlow && publicSiliconFlowTrial && (
+              <div className="public-trial-note siliconflow-trial-note" role="status">
+                <span>ASR</span>
+                <p>
+                  <strong>本站已提供硅基流动免费语音转写</strong>
+                  中文内容优先使用 SenseVoiceSmall；每位访客每天可在线转写{" "}
+                  {capabilities.siliconflow.dailyTranscribeLimit} 次，单个文件不超过 25 MB。
+                  {capabilities.siliconflow.groqFallback
+                    ? " 服务繁忙时会自动切换到 Groq。"
+                    : ""}
+                </p>
+              </div>
+            )}
             <details
               className="local-settings"
               open={settingsOpen}
@@ -1171,6 +1257,11 @@ export default function Home() {
                   <strong>Groq Whisper</strong>
                   <small>{publicGroqTrial ? "云端可用" : "待配置"}</small>
                 </div>
+                <div className={publicSiliconFlowTrial ? "ready" : "offline"}>
+                  <span />
+                  <strong>硅基流动 ASR</strong>
+                  <small>{publicSiliconFlowTrial ? "云端可用" : "待配置"}</small>
+                </div>
               </div>
               {sourceMode !== "transcript" && (
                 <div className={`local-mode-control ${localModeEnabled ? "enabled" : ""}`}>
@@ -1179,9 +1270,9 @@ export default function Home() {
                     <span>
                       {localModeEnabled
                         ? sourceMode === "upload"
-                          ? "已开启：文件交给本机 Whisper，不消耗 Groq 次数"
+                          ? "已开启：文件交给本机 Whisper，不消耗云端次数"
                           : "已开启：视频下载和 Whisper 转写均调用本机助手"
-                        : "已关闭：当前使用 Groq 云端转写"}
+                        : `已关闭：当前使用${transcriptionService}`}
                     </span>
                   </div>
                   <button
@@ -1225,7 +1316,7 @@ export default function Home() {
                     id="transcription-provider"
                     value={transcriptionProvider}
                     onChange={(event) => {
-                      const provider = event.target.value as "local" | "openai" | "groq";
+                      const provider = event.target.value as TranscriptionProvider;
                       if (provider === "local") {
                         void toggleLocalMode(true);
                       } else {
@@ -1235,7 +1326,8 @@ export default function Home() {
                     }}
                     disabled={isWorking}
                   >
-                    <option value="groq">Groq Whisper（线上推荐）</option>
+                    <option value="siliconflow">硅基流动 ASR（中文推荐）</option>
+                    <option value="groq">Groq Whisper（带时间轴）</option>
                     <option value="local">本机 Whisper</option>
                     {sourceMode === "url" && (
                       <option value="openai">OpenAI Whisper API</option>
@@ -1289,7 +1381,7 @@ export default function Home() {
               {sourceMode !== "transcript" && transcriptionProvider === "local" && (
                 <p className="local-whisper-note">
                   {sourceMode === "upload"
-                    ? "上传的文件直接交给你电脑上的本机 Whisper，不经过 Groq，也不会消耗云端转写次数。"
+                    ? "上传的文件直接交给你电脑上的本机 Whisper，不经过云端 ASR，也不会消耗在线转写次数。"
                     : pageRuntime === "hosted"
                       ? "线上网页只把视频交给你电脑上的本机助手，字幕仍在这台电脑上处理，无需 OpenAI Key。"
                       : "字幕在这台电脑上处理，无需 OpenAI Key。首次使用会下载 Whisper base 模型，之后可离线转写。"}
@@ -1320,6 +1412,41 @@ export default function Home() {
                     {publicGroqTrial
                       ? "达到本站免费次数后，可临时填写自己的密钥继续使用。"
                       : "仅用于 Groq Whisper 转写，不参与内容拆解。"}
+                  </p>
+                </>
+              )}
+              {usesSiliconFlow && (
+                <>
+                  <p className="local-whisper-note siliconflow-whisper-note">
+                    硅基流动在云端完成中文语音识别，适合快速生成纯文本字幕；当前接口不保证逐句时间轴。
+                    {capabilities?.siliconflow.groqFallback
+                      ? " 使用本站额度时，服务异常会自动切换到 Groq。"
+                      : ""}
+                  </p>
+                  <label htmlFor="siliconflow-key">
+                    {publicSiliconFlowTrial
+                      ? "自己的 SiliconFlow API Key（可选）"
+                      : "SiliconFlow API Key"}
+                  </label>
+                  <input
+                    id="siliconflow-key"
+                    type="password"
+                    autoComplete="off"
+                    placeholder={
+                      publicSiliconFlowTrial
+                        ? "留空即可使用本站免费转写额度"
+                        : "填写硅基流动控制台生成的密钥"
+                    }
+                    value={siliconflowApiKey}
+                    onChange={(event) =>
+                      setSiliconflowApiKey(event.target.value)
+                    }
+                    disabled={isWorking}
+                  />
+                  <p>
+                    {publicSiliconFlowTrial
+                      ? "达到本站免费次数后，可临时填写自己的密钥继续使用。"
+                      : "仅用于硅基流动语音转写，不参与内容拆解。"}
                   </p>
                 </>
               )}
@@ -1365,7 +1492,8 @@ export default function Home() {
               )}
               <p className="settings-privacy">
                 {(publicDeepseekTrial && analysisProvider === "deepseek") ||
-                (publicGroqTrial && usesGroq)
+                (publicGroqTrial && usesGroq) ||
+                (publicSiliconFlowTrial && usesSiliconFlow)
                   ? "本站提供的 API 密钥只保存在服务器，访客无法查看；自行填写的密钥只停留在当前页面内存。"
                   : `${needsOpenAIKey && analysisProvider === "deepseek" ? "两枚密钥" : "密钥"}只保存在当前页面内存中，不写入项目或浏览器存储。`}
               </p>
@@ -1376,11 +1504,13 @@ export default function Home() {
                   ? "线上页面需要先连接本机助手。使用前请确认你拥有下载与处理该内容的权利。"
                   : transcriptionProvider === "groq"
                     ? "音视频直链可由 Groq 在线转写；平台分享链接如无法读取，请改用“上传音视频”或“粘贴字幕”。"
+                    : transcriptionProvider === "siliconflow"
+                      ? "音视频直链可由硅基流动在线转写；平台分享链接如无法读取，请改用“上传音视频”或“粘贴字幕”。"
                     : "使用前请确认你拥有下载与处理该内容的权利。单个音频建议不超过 24 MB。"
                 : sourceMode === "upload"
                   ? transcriptionProvider === "local"
                     ? "本机模式开启后，文件只交给本机 Whisper 转写，不经过 Groq。"
-                    : "文件会发送到 Groq 进行临时转写，不在本站保存；请确认你拥有处理该内容的权利。"
+                    : `文件会发送到${transcriptionService}进行临时转写，不在本站保存；请确认你拥有处理该内容的权利。`
                   : publicDeepseekTrial
                   ? "线上版本可直接拆解已有字幕，不需要调用本机 Whisper，也不需要访客填写 DeepSeek 密钥。"
                   : "线上版本可直接拆解已有字幕，不需要调用本机 Whisper。字幕和密钥均不写入浏览器存储。"}
@@ -1473,7 +1603,9 @@ export default function Home() {
             </div>
             <div className="result-actions">
               <button type="button" onClick={copyReport}>{copied ? "已复制" : "复制报告"}</button>
-              <button type="button" onClick={downloadSrt}>下载 SRT</button>
+              <button type="button" onClick={downloadSrt}>
+                {result.segments.length > 0 ? "下载 SRT" : "下载 TXT"}
+              </button>
             </div>
           </div>
 
@@ -1505,6 +1637,22 @@ export default function Home() {
                 <div className="meta-pills">
                   <span>受众 · {result.analysis.audience}</span>
                   <span>类型 · {result.analysis.contentType}</span>
+                </div>
+              </article>
+
+              <article className="report-card strategy-card">
+                <div className="card-label">复用策略</div>
+                <div className="strategy-row">
+                  <span>内容公式</span>
+                  <p>{result.analysis.contentFormula}</p>
+                </div>
+                <div className="strategy-row">
+                  <span>开场机制</span>
+                  <p>{result.analysis.hookPattern}</p>
+                </div>
+                <div className="strategy-row">
+                  <span>转化路径</span>
+                  <p>{result.analysis.conversionPath}</p>
                 </div>
               </article>
 
@@ -1714,8 +1862,10 @@ export default function Home() {
         <div className="brand footer-brand"><span className="brand-mark">拆</span><span>拆片</span><em>AI</em></div>
         <p>让好内容，不止被看见一次。</p>
         <span>
-          {publicGroqTrial
-            ? "GROQ WHISPER × DEEPSEEK"
+          {publicSiliconFlowTrial
+            ? "SILICONFLOW ASR × DEEPSEEK"
+            : publicGroqTrial
+              ? "GROQ WHISPER × DEEPSEEK"
             : publicDeepseekTrial
               ? "PUBLIC TRIAL × DEEPSEEK"
               : "LOCAL WHISPER × DEEPSEEK"}

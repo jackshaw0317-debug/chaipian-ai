@@ -39,6 +39,7 @@ test("服务端渲染拆片 AI 产品页", async () => {
   assert.match(html, /DeepSeek/);
   assert.match(html, /上传音视频/);
   assert.match(html, /Groq Whisper/);
+  assert.match(html, /硅基流动 ASR/);
   assert.match(html, /粘贴字幕/);
   assert.doesNotMatch(html, /Your site is taking shape|Building your site|codex-preview/i);
 });
@@ -91,10 +92,12 @@ test("项目不再包含启动占位页，并保留本地隐私约束", async ()
   assert.match(healthRoute, /127\.0\.0\.1:4318\/health/);
   assert.match(analyzeRoute, /transcriptSegments/);
   assert.match(analyzeRoute, /api\.groq\.com\/openai\/v1\/audio\/transcriptions/);
+  assert.match(analyzeRoute, /api\.siliconflow\.cn\/v1\/audio\/transcriptions/);
   assert.match(analyzeRoute, /当前云端下载器尚未启用/);
   assert.match(capabilitiesRoute, /cloudAvailable/);
   assert.match(transcribeRoute, /MAX_FILE_BYTES = 25 \* 1024 \* 1024/);
   assert.match(transcribeRoute, /consumePublicAllowance\(request, "transcribe"\)/);
+  assert.match(transcribeRoute, /fallbackFrom = "siliconflow"/);
   assert.match(rewriteRoute, /唯一事实来源/);
   assert.match(rewriteRoute, /不得虚构/);
   assert.match(downloader, /https:\/\/jackshaw\.top/);

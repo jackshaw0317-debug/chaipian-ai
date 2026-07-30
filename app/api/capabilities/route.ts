@@ -18,6 +18,13 @@ export async function GET() {
         dailyTranscribeLimit: trial.dailyTranscribeLimit,
         maxFileBytes: 25 * 1024 * 1024,
       },
+      siliconflow: {
+        publicTrial: trial.siliconflowEnabled,
+        dailyTranscribeLimit: trial.dailyTranscribeLimit,
+        maxFileBytes: 25 * 1024 * 1024,
+        model: process.env.SILICONFLOW_ASR_MODEL || "FunAudioLLM/SenseVoiceSmall",
+        groqFallback: trial.groqEnabled,
+      },
       downloader: {
         cloudAvailable: Boolean(process.env.COBALT_API_URL?.trim()),
       },

@@ -6,6 +6,9 @@
 
 ### 新增
 
+- 硅基流动 SenseVoiceSmall 在线语音转写；
+- 硅基流动异常时自动切换 Groq 的云端降级链路；
+- 内容公式、开场机制与转化路径三项深度拆解；
 - GitHub 社区规范、安全策略、Issue 与 Pull Request 模板；
 - GitHub Actions 自动检查与 Dependabot 配置；
 - 可复用的本机组件安装脚本；

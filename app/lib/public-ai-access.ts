@@ -33,6 +33,7 @@ export function getPublicTrialConfig() {
   return {
     deepseekEnabled: Boolean(process.env.DEEPSEEK_API_KEY?.trim()),
     groqEnabled: Boolean(process.env.GROQ_API_KEY?.trim()),
+    siliconflowEnabled: Boolean(process.env.SILICONFLOW_API_KEY?.trim()),
     dailyAnalyzeLimit: positiveInteger(process.env.PUBLIC_ANALYZE_DAILY_LIMIT, 10),
     dailyRewriteLimit: positiveInteger(process.env.PUBLIC_REWRITE_DAILY_LIMIT, 10),
     dailyTranscribeLimit: positiveInteger(process.env.PUBLIC_TRANSCRIBE_DAILY_LIMIT, 10),
@@ -137,7 +138,9 @@ export async function consumePublicAllowance(
 ): Promise<PublicAllowance> {
   const config = getPublicTrialConfig();
   const providerEnabled =
-    action === "transcribe" ? config.groqEnabled : config.deepseekEnabled;
+    action === "transcribe"
+      ? config.siliconflowEnabled || config.groqEnabled
+      : config.deepseekEnabled;
   if (!providerEnabled) {
     return {
       allowed: false,
