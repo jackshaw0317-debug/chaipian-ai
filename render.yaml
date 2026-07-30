@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: chaipian-downloader-jackshaw0317
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./services/cobalt-render/Dockerfile
+    dockerContext: ./services/cobalt-render
+    autoDeployTrigger: commit
+    healthCheckPath: /
+    envVars:
+      - key: API_URL
+        value: https://chaipian-downloader-jackshaw0317.onrender.com/
+      - key: COBALT_API_KEY
+        sync: false
+      - key: CORS_WILDCARD
+        value: "0"
+      - key: CORS_URL
+        value: https://jackshaw.top
+      - key: DURATION_LIMIT
+        value: "900"
+      - key: TUNNEL_LIFESPAN
+        value: "90"
+      - key: RATELIMIT_WINDOW
+        value: "60"
+      - key: RATELIMIT_MAX
+        value: "12"
+      - key: TUNNEL_RATELIMIT_WINDOW
+        value: "60"
+      - key: TUNNEL_RATELIMIT_MAX
+        value: "24"
