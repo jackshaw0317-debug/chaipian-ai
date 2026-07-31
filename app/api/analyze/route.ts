@@ -77,12 +77,18 @@ async function fetchWithTimeout(
 
 function friendlyError(message: string) {
   const lower = message.toLowerCase();
+  if (lower.includes("chaipian.douyin.media_not_found")) {
+    return "抖音页面已打开，但平台没有返回可用的视频流。请确认链接仍有效、内容为公开作品，稍后再试一次。";
+  }
+  if (lower.includes("chaipian.douyin")) {
+    return "抖音临时限制了云端读取。请稍后重试；如果仍失败，可改用“上传音视频”或在自己的电脑上开启本机模式。";
+  }
   if (
     lower.includes("timeout") ||
     lower.includes("timed out") ||
     lower.includes("aborted")
   ) {
-    return "处理超时。请确认本机服务仍在运行，或换一个更短的视频后重试。";
+    return "处理超时。免费云端服务首次唤醒可能需要约 1 分钟，请稍后重试，或换一个更短的视频。";
   }
   if (lower.includes("api key") || lower.includes("unauthorized") || lower.includes("401")) {
     if (lower.includes("siliconflow")) {
@@ -227,7 +233,7 @@ async function resolveMedia(sourceUrl: URL, cookieBrowser = "") {
       localProcessing: "disabled",
       alwaysProxy: true,
     }),
-  }, 60_000);
+  }, 150_000);
   const downloadPayload = (await downloadResponse.json()) as DownloaderResponse;
   if (!downloadResponse.ok || !["tunnel", "redirect"].includes(downloadPayload.status || "") || !downloadPayload.url) {
     throw new Error(
@@ -239,7 +245,7 @@ async function resolveMedia(sourceUrl: URL, cookieBrowser = "") {
   const mediaResponse = await fetchWithTimeout(
     mediaUrl,
     { redirect: "follow" },
-    90_000,
+    120_000,
   );
   if (!mediaResponse.ok) {
     throw new Error(`Downloader media fetch failed: ${mediaResponse.status}`);
