@@ -10,8 +10,14 @@ public_port="${PORT:-9000}"
 internal_port="${COBALT_INTERNAL_PORT:-9001}"
 
 if [ -n "${COBALT_API_KEY:-}" ]; then
+  # Cobalt validates API keys as UUIDv4 values. Keep the external key opaque so
+  # existing site deployments do not need to change, and derive a valid,
+  # internal-only UUID for the loopback Cobalt process.
+  export COBALT_INTERNAL_API_KEY="$(
+    node -e 'const { createHash } = require("node:crypto"); const hex = createHash("sha256").update(process.env.COBALT_API_KEY).digest("hex"); const variant = "89ab"[parseInt(hex[16], 16) & 3]; console.log(`${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`);'
+  )"
   key_file="/tmp/cobalt-keys.json"
-  printf '{"%s":{"name":"chaipian-ai","limit":12}}' "${COBALT_API_KEY}" > "${key_file}"
+  printf '{"%s":{"name":"chaipian-ai","limit":12}}' "${COBALT_INTERNAL_API_KEY}" > "${key_file}"
   chmod 600 "${key_file}"
   export API_KEY_URL="file://${key_file}"
 fi

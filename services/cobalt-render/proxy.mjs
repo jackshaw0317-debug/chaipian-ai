@@ -64,6 +64,10 @@ function copyRequestHeaders(request) {
     if (value == null || name.toLowerCase() === "host") continue;
     headers.set(name, Array.isArray(value) ? value.join(", ") : value);
   }
+  const internalApiKey = process.env.COBALT_INTERNAL_API_KEY?.trim();
+  if (internalApiKey) {
+    headers.set("Authorization", `Api-Key ${internalApiKey}`);
+  }
   return headers;
 }
 
@@ -572,6 +576,18 @@ const server = createServer(async (request, response) => {
         ? Buffer.alloc(0)
         : await readRequestBody(request);
 
+    if (request.method === "POST" && requestUrl.pathname === "/") {
+      const authorization = await authorizeWithCobalt(request, body);
+      if (!authorization.allowed) {
+        response.writeHead(authorization.status, {
+          ...authorization.headers,
+          "Content-Type": "application/json; charset=utf-8",
+        });
+        response.end(authorization.text);
+        return;
+      }
+    }
+
     if (request.method !== "POST" || requestUrl.pathname !== "/") {
       await proxyToCobalt(request, response, body);
       return;
@@ -595,16 +611,6 @@ const server = createServer(async (request, response) => {
 
     if (!isDouyinHostname(sourceUrl.hostname)) {
       await proxyToCobalt(request, response, body);
-      return;
-    }
-
-    const authorization = await authorizeWithCobalt(request, body);
-    if (!authorization.allowed) {
-      response.writeHead(authorization.status, {
-        ...authorization.headers,
-        "Content-Type": "application/json; charset=utf-8",
-      });
-      response.end(authorization.text);
       return;
     }
 
