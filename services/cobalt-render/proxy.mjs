@@ -10,7 +10,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 
 const host = "0.0.0.0";
 const port = Number(process.env.PROXY_PORT || process.env.PORT || 9000);
@@ -102,6 +102,38 @@ async function proxyToCobalt(request, response, body) {
 }
 
 async function authorizeWithCobalt(request, body) {
+  const configuredKey = process.env.COBALT_API_KEY?.trim();
+  if (configuredKey) {
+    const authorization = String(request.headers.authorization || "").trim();
+    const separatorIndex = authorization.indexOf(" ");
+    const scheme =
+      separatorIndex >= 0
+        ? authorization.slice(0, separatorIndex).toLowerCase()
+        : "";
+    const providedKey =
+      separatorIndex >= 0
+        ? authorization.slice(separatorIndex + 1).trim()
+        : "";
+    const expectedBuffer = Buffer.from(configuredKey);
+    const providedBuffer = Buffer.from(providedKey);
+    const matches =
+      scheme === "api-key" &&
+      expectedBuffer.length === providedBuffer.length &&
+      timingSafeEqual(expectedBuffer, providedBuffer);
+    if (!matches) {
+      return {
+        allowed: false,
+        status: 401,
+        text: JSON.stringify({
+          status: "error",
+          error: { code: "error.api.auth.invalid" },
+        }),
+        headers: {},
+      };
+    }
+    return { allowed: true };
+  }
+
   const upstream = await fetch(cobaltUrl, {
     method: "POST",
     headers: copyRequestHeaders(request),
