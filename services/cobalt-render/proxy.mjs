@@ -405,18 +405,23 @@ async function extractDouyinAudio(sourceUrl) {
   );
 
   let mediaUrl = "";
+  let audioUrl = "";
+  let videoDetectedAt = 0;
   try {
     const webSocketUrl = await waitForDebuggerPage(debugPort);
     const cdp = createCdpClient(webSocketUrl, (message) => {
       if (message.method !== "Network.responseReceived") return;
       const candidate = String(message.params?.response?.url || "");
       const mimeType = String(message.params?.response?.mimeType || "");
-      if (
+      if (!isTrustedDouyinMedia(candidate)) return;
+      if (!audioUrl && mimeType.startsWith("audio/")) {
+        audioUrl = candidate;
+      } else if (
         !mediaUrl &&
-        isTrustedDouyinMedia(candidate) &&
         (mimeType.startsWith("video/") || candidate.includes("video"))
       ) {
         mediaUrl = candidate;
+        videoDetectedAt = Date.now();
       }
     });
     let pageUrl = sourceUrl.href;
@@ -432,13 +437,21 @@ async function extractDouyinAudio(sourceUrl) {
       await cdp.send("Page.navigate", { url: sourceUrl.href });
 
       const deadline = Date.now() + 45_000;
-      while (Date.now() < deadline && !mediaUrl) {
+      while (
+        Date.now() < deadline &&
+        !audioUrl &&
+        (!mediaUrl || Date.now() - videoDetectedAt < 5_000)
+      ) {
         const evaluation = await cdp.send("Runtime.evaluate", {
           expression: `(() => ({
             pageUrl: location.href,
             userAgent: navigator.userAgent,
             mediaUrl: Array.from(document.querySelectorAll("video"))
-              .map((video) => video.currentSrc || video.src)
+              .map((video) => {
+                video.muted = false;
+                video.play().catch(() => undefined);
+                return video.currentSrc || video.src;
+              })
               .find((source) => /^https:\\/\\//i.test(source)) || ""
           }))()`,
           returnByValue: true,
@@ -447,8 +460,11 @@ async function extractDouyinAudio(sourceUrl) {
         pageUrl = String(value.pageUrl || pageUrl);
         userAgent = String(value.userAgent || userAgent);
         const domMediaUrl = String(value.mediaUrl || "");
-        if (isTrustedDouyinMedia(domMediaUrl)) mediaUrl = domMediaUrl;
-        if (!mediaUrl) await wait(750);
+        if (isTrustedDouyinMedia(domMediaUrl) && !mediaUrl) {
+          mediaUrl = domMediaUrl;
+          videoDetectedAt = Date.now();
+        }
+        if (!audioUrl) await wait(750);
       }
       const cookieResult = await cdp.send("Network.getAllCookies");
       cookieHeader = (cookieResult.cookies || [])
@@ -470,7 +486,7 @@ async function extractDouyinAudio(sourceUrl) {
       throw new Error("chaipian.douyin.media_not_found");
     }
     await runFfmpeg(
-      mediaUrl,
+      audioUrl || mediaUrl,
       outputPath,
       userAgent,
       pageUrl,
