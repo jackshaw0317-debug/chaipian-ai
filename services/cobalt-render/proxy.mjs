@@ -291,13 +291,27 @@ function isTrustedDouyinMedia(candidate) {
   }
 }
 
-function runFfmpeg(mediaUrl, outputPath, userAgent, referer) {
+function runFfmpeg(
+  mediaUrl,
+  outputPath,
+  userAgent,
+  referer,
+  cookieHeader,
+) {
   return new Promise((resolvePromise, rejectPromise) => {
     const headerLines = [
       `User-Agent: ${userAgent}`,
       `Referer: ${referer || "https://www.douyin.com/"}`,
       "Origin: https://www.douyin.com",
-    ].join("\r\n");
+      "Accept: */*",
+      "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8",
+      "Sec-Fetch-Dest: video",
+      "Sec-Fetch-Mode: no-cors",
+      "Sec-Fetch-Site: cross-site",
+      cookieHeader ? `Cookie: ${cookieHeader}` : "",
+    ]
+      .filter(Boolean)
+      .join("\r\n");
     const child = spawn(
       "ffmpeg",
       [
@@ -341,7 +355,17 @@ function runFfmpeg(mediaUrl, outputPath, userAgent, referer) {
     child.on("close", (code) => {
       clearTimeout(timeout);
       if (code === 0) resolvePromise();
-      else rejectPromise(new Error("chaipian.douyin.audio_extract_failed"));
+      else if (/403|forbidden/i.test(stderr)) {
+        rejectPromise(new Error("chaipian.douyin.audio_forbidden"));
+      } else if (/\b404\b/i.test(stderr)) {
+        rejectPromise(new Error("chaipian.douyin.audio_expired"));
+      } else if (/no such file|not found/i.test(stderr)) {
+        rejectPromise(new Error("chaipian.douyin.ffmpeg_unavailable"));
+      } else if (/does not contain any stream|stream map/i.test(stderr)) {
+        rejectPromise(new Error("chaipian.douyin.audio_stream_missing"));
+      } else {
+        rejectPromise(new Error("chaipian.douyin.audio_extract_failed"));
+      }
     });
   });
 }
@@ -395,6 +419,7 @@ async function extractDouyinAudio(sourceUrl) {
     let userAgent =
       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
       "(KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
+    let cookieHeader = "";
     try {
       await cdp.send("Network.enable");
       await cdp.send("Network.setUserAgentOverride", { userAgent });
@@ -421,6 +446,18 @@ async function extractDouyinAudio(sourceUrl) {
         if (isTrustedDouyinMedia(domMediaUrl)) mediaUrl = domMediaUrl;
         if (!mediaUrl) await wait(750);
       }
+      const cookieResult = await cdp.send("Network.getAllCookies");
+      cookieHeader = (cookieResult.cookies || [])
+        .filter((cookie) => {
+          const domain = String(cookie.domain || "").toLowerCase();
+          return (
+            domain === "douyin.com" ||
+            domain.endsWith(".douyin.com") ||
+            domain.endsWith(".douyinvod.com")
+          );
+        })
+        .map((cookie) => `${cookie.name}=${cookie.value}`)
+        .join("; ");
     } finally {
       cdp.close();
     }
@@ -428,7 +465,13 @@ async function extractDouyinAudio(sourceUrl) {
     if (!mediaUrl) {
       throw new Error("chaipian.douyin.media_not_found");
     }
-    await runFfmpeg(mediaUrl, outputPath, userAgent, pageUrl);
+    await runFfmpeg(
+      mediaUrl,
+      outputPath,
+      userAgent,
+      pageUrl,
+      cookieHeader,
+    );
     const outputStat = await stat(outputPath);
     if (outputStat.size <= 0 || outputStat.size > maxAudioBytes) {
       throw new Error("chaipian.douyin.audio_too_large");
