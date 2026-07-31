@@ -20,9 +20,10 @@ export API_AUTH_REQUIRED="1"
 export API_PORT="${internal_port}"
 export COBALT_INTERNAL_URL="http://127.0.0.1:${internal_port}"
 export PROXY_PORT="${public_port}"
-export CHROMIUM_EXECUTABLE="${
-  CHROMIUM_EXECUTABLE:-$(command -v chromium-browser || command -v chromium)
-}"
+if [ -z "${CHROMIUM_EXECUTABLE:-}" ]; then
+  CHROMIUM_EXECUTABLE="$(command -v chromium-browser || command -v chromium)"
+  export CHROMIUM_EXECUTABLE
+fi
 
 node src/cobalt &
 cobalt_pid=$!
