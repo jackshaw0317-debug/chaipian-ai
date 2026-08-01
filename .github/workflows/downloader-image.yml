@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: 获取代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 登录 GitHub Container Registry
         uses: docker/login-action@v3
